@@ -24,6 +24,7 @@ const WHEEL_COLORS = ['#23395B', '#F2B705', '#2F7D52', '#B8382A', '#4A6FA5', '#E
 const state = {
   token: localStorage.getItem(TOKEN_KEY) || '',
   user: null,
+  pwMode: 'initial', // 'initial'=初期設定 / 'change'=任意の変更
   categories: [],
   result: null,
   wheel: { rotation: 0, spinning: false, candidates: [] }
@@ -63,11 +64,52 @@ function showApp() {
   $('appView').hidden = false;
   $('userBox').hidden = false;
   $('userName').textContent = (state.user && state.user.nickname ? state.user.nickname : '') + ' さん';
-  $('pwModal').hidden = !(state.user && state.user.mustChangePassword);
-  if (!$('pwModal').hidden) {
-    setMsg('pwMsg', '');
-    setTimeout(() => $('pwForm').currentPassword.focus(), 50);
+  if (state.user && state.user.mustChangePassword) {
+    openPwModal('initial');
+  } else {
+    closePwModal();
   }
+}
+
+/* パスワードモーダル：initial=初回ログイン時の設定 / change=ログイン中の変更 */
+function openPwModal(mode) {
+  state.pwMode = mode;
+  const initial = mode === 'initial';
+  const f = $('pwForm');
+  resetPasswordFields(f);
+  $('pwModalTitle').textContent = initial ? 'パスワードを設定してください' : 'パスワードを変更する';
+  $('pwModalNote').textContent = initial
+    ? 'これからログインに使うパスワードを決めてください。英字と数字を含む8文字以上です。'
+    : '現在のパスワードと、新しいパスワードを入力してください。';
+  $('pwCurrentField').hidden = initial;
+  f.currentPassword.required = !initial;
+  $('pwSubmitBtn').textContent = initial ? 'パスワードを設定する' : 'パスワードを変更する';
+  $('pwCancelBtn').hidden = initial;
+  $('pwLogoutBtn').hidden = !initial;
+  setMsg('pwMsg', '');
+  updatePwRules();
+  $('pwModal').hidden = false;
+  setTimeout(() => (initial ? f.newPassword : f.currentPassword).focus(), 50);
+}
+
+function closePwModal() {
+  $('pwModal').hidden = true;
+  resetPasswordFields($('pwForm'));
+}
+
+function updatePwRules() {
+  const f = $('pwForm');
+  const v = f.newPassword.value;
+  const checks = {
+    len: v.length >= 8,
+    alpha: /[A-Za-z]/.test(v),
+    digit: /[0-9]/.test(v),
+    match: v.length > 0 && v === f.confirmPassword.value
+  };
+  document.querySelectorAll('#pwRules li').forEach((li) => {
+    li.classList.toggle('is-ok', !!checks[li.dataset.rule]);
+  });
+  return checks;
 }
 
 function setMsg(id, text, type) {
@@ -194,28 +236,37 @@ function setupAuth() {
   $('pwForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = e.target;
+    const initial = state.pwMode === 'initial';
     const cur = f.currentPassword.value;
     const next = f.newPassword.value;
-    const conf = f.confirmPassword.value;
-    if (!cur || !next) return setMsg('pwMsg', 'すべての欄を入力してください', 'error');
-    if (next.length < 8 || !/[A-Za-z]/.test(next) || !/[0-9]/.test(next)) {
+    const checks = updatePwRules();
+    if (!initial && !cur) return setMsg('pwMsg', '現在のパスワードを入力してください', 'error');
+    if (!next) return setMsg('pwMsg', '新しいパスワードを入力してください', 'error');
+    if (!checks.len || !checks.alpha || !checks.digit) {
       return setMsg('pwMsg', '新しいパスワードは英字と数字を含む8文字以上にしてください', 'error');
     }
-    if (next !== conf) return setMsg('pwMsg', '確認用のパスワードが一致しません', 'error');
+    if (!checks.match) return setMsg('pwMsg', '確認用のパスワードが一致しません', 'error');
     try {
-      await withBusy(f.querySelector('button[type="submit"]'), async () => {
-        const r = await api('changePassword', { currentPassword: cur, newPassword: next });
+      await withBusy($('pwSubmitBtn'), async () => {
+        const payload = initial ? { newPassword: next } : { currentPassword: cur, newPassword: next };
+        const r = await api('changePassword', payload);
         state.token = r.token;
         state.user = r.user;
         localStorage.setItem(TOKEN_KEY, r.token);
-        resetPasswordFields(f);
+        closePwModal();
         showApp();
-        toast(r.message || 'パスワードを変更しました');
+        toast(r.message || (initial ? 'パスワードを設定しました' : 'パスワードを変更しました'));
       });
     } catch (err) {
       setMsg('pwMsg', err.message, 'error');
     }
   });
+
+  ['newPassword', 'confirmPassword'].forEach((name) => {
+    $('pwForm')[name].addEventListener('input', updatePwRules);
+  });
+  $('changePwBtn').addEventListener('click', () => openPwModal('change'));
+  $('pwCancelBtn').addEventListener('click', closePwModal);
 
   $('logoutBtn').addEventListener('click', logout);
   $('pwLogoutBtn').addEventListener('click', logout);
@@ -236,7 +287,7 @@ async function logout() {
   state.token = '';
   state.user = null;
   localStorage.removeItem(TOKEN_KEY);
-  resetPasswordFields($('pwForm'));
+  closePwModal();
   showAuth();
   switchTab('login');
 }
@@ -745,7 +796,11 @@ function init() {
   $('aiResultBtn').addEventListener('click', onAiResult);
   $('aiCloseBtn').addEventListener('click', () => { $('aiModal').hidden = true; });
   $('aiModal').addEventListener('click', (e) => { if (e.target.id === 'aiModal') $('aiModal').hidden = true; });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('aiModal').hidden = true; });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    $('aiModal').hidden = true;
+    if (state.pwMode === 'change' && !$('pwModal').hidden) closePwModal();
+  });
 
   let resizeTimer = null;
   window.addEventListener('resize', () => {

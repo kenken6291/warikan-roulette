@@ -17,6 +17,7 @@
       <h1 class="brand">ワリカン<span class="brand-sub">ルーレット</span></h1>
       <div class="userbox" id="userBox" hidden>
         <span class="user-name" id="userName"></span>
+        <button type="button" class="link-btn" id="changePwBtn">パスワード変更</button>
         <button type="button" class="link-btn" id="logoutBtn">ログアウト</button>
       </div>
     </div>
@@ -166,15 +167,15 @@
     </section>
   </main>
 
-  <!-- 強制パスワード変更モーダル -->
+  <!-- パスワード設定／変更モーダル -->
   <div class="modal" id="pwModal" hidden role="dialog" aria-modal="true" aria-labelledby="pwModalTitle">
     <div class="modal-card">
-      <h2 id="pwModalTitle" class="modal-title">パスワードを変更してください</h2>
-      <p class="note">仮パスワードのままでは利用できません。英字と数字を含む8文字以上で設定してください。</p>
+      <h2 id="pwModalTitle" class="modal-title">パスワードを設定してください</h2>
+      <p class="note" id="pwModalNote">これからログインに使うパスワードを決めてください。英字と数字を含む8文字以上です。</p>
       <form id="pwForm" novalidate>
-        <label class="field">
-          <span class="field-label">いまのパスワード（仮パスワード）</span>
-          <span class="pw-field"><input type="password" name="currentPassword" autocomplete="current-password" required></span>
+        <label class="field" id="pwCurrentField" hidden>
+          <span class="field-label">現在のパスワード</span>
+          <span class="pw-field"><input type="password" name="currentPassword" autocomplete="current-password"></span>
         </label>
         <label class="field">
           <span class="field-label">新しいパスワード</span>
@@ -184,8 +185,15 @@
           <span class="field-label">新しいパスワード（確認）</span>
           <span class="pw-field"><input type="password" name="confirmPassword" autocomplete="new-password" required></span>
         </label>
+        <ul class="pw-rules" id="pwRules" aria-live="polite">
+          <li data-rule="len">8文字以上</li>
+          <li data-rule="alpha">英字を含む</li>
+          <li data-rule="digit">数字を含む</li>
+          <li data-rule="match">確認用と一致</li>
+        </ul>
         <p class="form-msg" id="pwMsg" role="alert"></p>
-        <button type="submit" class="btn btn-primary btn-wide">パスワードを変更する</button>
+        <button type="submit" class="btn btn-primary btn-wide" id="pwSubmitBtn">パスワードを設定する</button>
+        <button type="button" class="btn btn-ghost btn-wide pw-cancel" id="pwCancelBtn" hidden>やめる</button>
         <button type="button" class="link-btn modal-logout" id="pwLogoutBtn">ログアウトする</button>
       </form>
     </div>

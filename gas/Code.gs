@@ -4,7 +4,8 @@
  * 機能:
  *  - 会員登録（仮パスワードをメール送信）
  *  - ログイン（5回失敗で15分ロック）
- *  - 初回／再発行後の強制パスワード変更
+ *  - 初回／再発行後の初期パスワード設定（仮パスワードの再入力不要）
+ *  - ログイン中の任意のパスワード変更（現在のパスワードが必要）
  *  - パスワード再発行（仮パスワード再送）
  *  - セッション（CacheService、sessionVersion で一括無効化）
  *  - Gemini API による AI コメント生成（キーは Script Properties のみ）
@@ -198,16 +199,28 @@ function handleChangePassword_(req) {
   const current = String(req.currentPassword || '');
   const next = String(req.newPassword || '');
   validateNewPassword_(next);
-  if (current === next) throw new AppError('新しいパスワードは現在のものと別にしてください');
 
   return withLock_(() => {
     const found = findUserById_(session.userId);
     if (!found) throw new AppError('ユーザーが見つかりません');
     const u = found.data;
-    if (!verifyPassword_(current, u.salt, u.passwordHash)) {
-      log_(u.email, 'changePassword', 'NG', 'bad current');
-      throw new AppError('現在のパスワードが違います');
+    const initial = isTrue_(u.mustChangePassword);
+
+    if (initial) {
+      // 初期設定：仮パスワードでログイン済み＝本人確認済みなので、仮パスワードの再入力は不要
+      if (verifyPassword_(next, u.salt, u.passwordHash)) {
+        throw new AppError('仮パスワードとは別のパスワードを設定してください');
+      }
+    } else {
+      // 任意の変更：現在のパスワードが必要
+      if (!current) throw new AppError('現在のパスワードを入力してください');
+      if (!verifyPassword_(current, u.salt, u.passwordHash)) {
+        log_(u.email, 'changePassword', 'NG', 'bad current');
+        throw new AppError('現在のパスワードが違います');
+      }
+      if (current === next) throw new AppError('新しいパスワードは現在のものと別にしてください');
     }
+
     u.salt = randomString_(32, 'abcdef0123456789');
     u.passwordHash = hashPassword_(next, u.salt);
     u.status = 'ACTIVE';
@@ -219,8 +232,13 @@ function handleChangePassword_(req) {
 
     CacheService.getScriptCache().remove(sessionKey_(req.token));
     const token = createSession_(u);
-    log_(u.email, 'changePassword', 'OK', '');
-    return { ok: true, token: token, user: publicUser_(u), message: 'パスワードを変更しました' };
+    log_(u.email, initial ? 'setPassword' : 'changePassword', 'OK', '');
+    return {
+      ok: true,
+      token: token,
+      user: publicUser_(u),
+      message: initial ? 'パスワードを設定しました。ようこそ！' : 'パスワードを変更しました'
+    };
   });
 }
 
