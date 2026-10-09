@@ -1,6 +1,10 @@
 /* ワリカン・ルーレット フロントエンド */
 'use strict';
 
+/* バージョン表記（更新時はここと index.html の ?v= をそろえて上げる） */
+const APP_VERSION = '1.4.0';
+const APP_UPDATED = '2026-10-09';
+
 /* GASのURLは config.js で設定 */
 const GAS_URL = (window.APP_CONFIG && window.APP_CONFIG.GAS_URL) || '';
 const GAS_URL_READY = /^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(GAS_URL) && !GAS_URL.includes('YOUR_DEPLOYMENT_ID');
@@ -890,6 +894,7 @@ function onAiResult() {
  * 起動
  * ============================================================ */
 function init() {
+  $('appVersion').textContent = 'v' + APP_VERSION + '（' + APP_UPDATED.replace(/-/g, '.') + ' 更新）';
   if (!GAS_URL_READY) {
     console.warn('config.js の GAS_URL を設定してください');
   }

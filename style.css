@@ -773,6 +773,26 @@ input:focus { outline: none; background: var(--lemon-soft); }
 .ai-text.is-loading::after { content: "…"; animation: dots 1s steps(3) infinite; }
 @keyframes dots { 0% { content: "."; } 50% { content: ".."; } 100% { content: "..."; } }
 
+/* ---------- フッター（バージョン） ---------- */
+.site-footer {
+  text-align: center;
+  padding: 0 16px calc(28px + env(safe-area-inset-bottom, 0px));
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.site-footer p { margin: 0; }
+.version {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 10px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 700;
+}
+.wrap { padding-bottom: 32px; }
+
 /* ---------- トースト ---------- */
 .toast {
   position: fixed;
