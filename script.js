@@ -6,20 +6,23 @@ const GAS_URL = (window.APP_CONFIG && window.APP_CONFIG.GAS_URL) || '';
 const GAS_URL_READY = /^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(GAS_URL) && !GAS_URL.includes('YOUR_DEPLOYMENT_ID');
 
 const TOKEN_KEY = 'warikan_token';
-const SETTINGS_KEY = 'warikan_settings_v1';
+const SETTINGS_KEY = 'warikan_settings_v2';
 
+// step: 1=金額が決まってる人 / 2=女性の頭割り / 3=残りを男性で割る（入力・表示の順番）
 const DEFAULT_CATEGORIES = [
-  { key: 'male',    label: '男性',           short: '男性',     mode: 'ratio', value: 1,   count: 2 },
-  { key: 'female',  label: '女性',           short: '女性',     mode: 'ratio', value: 1,   count: 2 },
-  { key: 'seniorM', label: '年長者（男性）', short: '年長男性', mode: 'ratio', value: 1.5, count: 0 },
-  { key: 'seniorF', label: '年長者（女性）', short: '年長女性', mode: 'ratio', value: 1.5, count: 0 },
-  { key: 'guestM',  label: '主賓（男性）',   short: '主賓男性', mode: 'fixed', value: 0,   count: 0 },
-  { key: 'guestF',  label: '主賓（女性）',   short: '主賓女性', mode: 'fixed', value: 0,   count: 0 },
-  { key: 'inviteM', label: '招待客（男性）', short: '招待男性', mode: 'fixed', value: 0,   count: 0 },
-  { key: 'inviteF', label: '招待客（女性）', short: '招待女性', mode: 'fixed', value: 0,   count: 0 }
+  { key: 'guestM',  step: 1, icon: '🤵', label: '主賓（男性）',   short: '主賓男性', mode: 'fixed', value: 0,     count: 0 },
+  { key: 'guestF',  step: 1, icon: '👑', label: '主賓（女性）',   short: '主賓女性', mode: 'fixed', value: 0,     count: 0 },
+  { key: 'inviteM', step: 1, icon: '🎩', label: '招待客（男性）', short: '招待男性', mode: 'fixed', value: 0,     count: 0 },
+  { key: 'inviteF', step: 1, icon: '💐', label: '招待客（女性）', short: '招待女性', mode: 'fixed', value: 0,     count: 0 },
+  { key: 'seniorM', step: 1, icon: '👴', label: '年長者（男性）', short: '年長男性', mode: 'fixed', value: 10000, count: 0 },
+  { key: 'seniorF', step: 1, icon: '👵', label: '年長者（女性）', short: '年長女性', mode: 'fixed', value: 10000, count: 0 },
+  { key: 'female',  step: 2, icon: '🙋‍♀️', label: '女性',         short: '女性',     mode: 'fixed', value: 3000,  count: 2 },
+  { key: 'male',    step: 3, icon: '🙋‍♂️', label: '男性',         short: '男性',     mode: 'ratio', value: 1,     count: 2 }
 ];
+const QUICK_AMOUNTS = [0, 3000, 5000, 10000];
 
-const WHEEL_COLORS = ['#23395B', '#F2B705', '#2F7D52', '#B8382A', '#4A6FA5', '#E8D9A8', '#6B4E8A', '#D9822B'];
+const WHEEL_COLORS = ['#FF8A3D', '#2EC4A0', '#FFD23F', '#FF6F91', '#5B8DEF', '#B48CF2', '#FFB4A2', '#7BD389'];
+const WHEEL_INK = '#2B2D42';
 
 const state = {
   token: localStorage.getItem(TOKEN_KEY) || '',
@@ -32,6 +35,14 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 const yen = (n) => Math.round(n).toLocaleString('ja-JP') + '円';
+const getRadio = (name) => {
+  const el = document.querySelector('input[name="' + name + '"]:checked');
+  return el ? el.value : '';
+};
+const setRadio = (name, value) => {
+  const el = document.querySelector('input[name="' + name + '"][value="' + value + '"]');
+  if (el) el.checked = true;
+};
 
 /* ============================================================
  * API
@@ -317,8 +328,8 @@ function loadSettings() {
   });
   if (saved) {
     if (saved.total) $('totalInput').value = saved.total;
-    if (saved.unit) $('unitSelect').value = saved.unit;
-    if (saved.method) $('methodSelect').value = saved.method;
+    if (saved.unit) setRadio('unit', saved.unit);
+    if (saved.method) setRadio('method', saved.method);
     if (saved.organizer) $('organizerInput').value = saved.organizer;
   }
 }
@@ -326,8 +337,8 @@ function loadSettings() {
 function saveSettings() {
   const data = {
     total: $('totalInput').value,
-    unit: $('unitSelect').value,
-    method: $('methodSelect').value,
+    unit: getRadio('unit'),
+    method: getRadio('method'),
     organizer: $('organizerInput').value,
     categories: state.categories.map(({ key, mode, value, count }) => ({ key, mode, value, count }))
   };
@@ -335,16 +346,21 @@ function saveSettings() {
 }
 
 function renderMembers() {
-  const list = $('membersList');
-  list.innerHTML = '';
+  [1, 2, 3].forEach((n) => { $('step' + n + 'List').innerHTML = ''; });
   state.categories.forEach((c, i) => {
     const row = document.createElement('div');
     row.className = 'member' + (c.count === 0 ? ' is-empty' : '');
+
+    const icon = document.createElement('div');
+    icon.className = 'member-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = c.icon;
 
     const name = document.createElement('div');
     name.className = 'member-name';
     name.textContent = c.label;
 
+    // 人数
     const stepper = document.createElement('div');
     stepper.className = 'stepper';
     const minus = document.createElement('button');
@@ -356,20 +372,27 @@ function renderMembers() {
     out.setAttribute('aria-label', c.label + 'の人数');
     const plus = document.createElement('button');
     plus.type = 'button';
+    plus.className = 'plus';
     plus.textContent = '+';
     plus.setAttribute('aria-label', c.label + 'を1人増やす');
     minus.addEventListener('click', () => changeCount(i, -1, out, row));
     plus.addEventListener('click', () => changeCount(i, 1, out, row));
     stepper.append(minus, out, plus);
 
-    const modeWrap = document.createElement('div');
-    modeWrap.className = 'member-mode';
-    const sel = document.createElement('select');
-    sel.setAttribute('aria-label', c.label + 'の負担方法');
-    sel.innerHTML = '<option value="ratio">比率で分ける</option><option value="fixed">定額にする</option>';
-    sel.value = c.mode;
-    modeWrap.appendChild(sel);
+    // 比率／定額 切り替え
+    const toggle = document.createElement('div');
+    toggle.className = 'mode-toggle';
+    toggle.setAttribute('role', 'group');
+    toggle.setAttribute('aria-label', c.label + 'の負担方法');
+    const btnRatio = document.createElement('button');
+    btnRatio.type = 'button';
+    btnRatio.textContent = '比率';
+    const btnFixed = document.createElement('button');
+    btnFixed.type = 'button';
+    btnFixed.textContent = '定額';
+    toggle.append(btnRatio, btnFixed);
 
+    // 値
     const valWrap = document.createElement('div');
     valWrap.className = 'member-value';
     const input = document.createElement('input');
@@ -378,45 +401,132 @@ function renderMembers() {
     input.setAttribute('aria-label', c.label + 'の値');
     const unit = document.createElement('span');
     unit.className = 'unit';
+    valWrap.append(input, unit);
+
+    // 定額のクイック入力
+    const quick = document.createElement('div');
+    quick.className = 'quick-amounts';
+    QUICK_AMOUNTS.forEach((amt) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = amt === 0 ? '0円' : amt.toLocaleString('ja-JP') + '円';
+      b.setAttribute('aria-label', c.label + 'を1人' + amt + '円にする');
+      b.addEventListener('click', () => {
+        c.value = amt;
+        input.value = amt;
+        saveSettings();
+        updatePreview();
+      });
+      quick.appendChild(b);
+    });
+
     const syncMode = () => {
-      if (c.mode === 'ratio') {
-        input.step = '0.1';
-        input.inputMode = 'decimal';
-        unit.textContent = '倍';
-      } else {
-        input.step = '100';
-        input.inputMode = 'numeric';
-        unit.textContent = '円/人';
-      }
+      const ratio = c.mode === 'ratio';
+      row.classList.toggle('is-ratio', ratio);
+      btnRatio.setAttribute('aria-pressed', String(ratio));
+      btnFixed.setAttribute('aria-pressed', String(!ratio));
+      input.step = ratio ? '0.1' : '100';
+      input.inputMode = ratio ? 'decimal' : 'numeric';
+      unit.textContent = ratio ? '倍' : '円/人';
       input.value = c.value;
     };
-    syncMode();
-    sel.addEventListener('change', () => {
-      c.mode = sel.value;
-      c.value = c.mode === 'ratio' ? 1 : 0;
+    const setMode = (mode) => {
+      if (c.mode === mode) return;
+      c.mode = mode;
+      c.value = mode === 'ratio' ? 1 : 0;
       syncMode();
       saveSettings();
-    });
+      updatePreview();
+    };
+    btnRatio.addEventListener('click', () => setMode('ratio'));
+    btnFixed.addEventListener('click', () => setMode('fixed'));
     input.addEventListener('input', () => {
       const v = Number(input.value);
       c.value = Number.isFinite(v) && v >= 0 ? v : 0;
       saveSettings();
+      updatePreview();
     });
-    valWrap.append(input, unit);
+    syncMode();
 
-    row.append(name, stepper, modeWrap, valWrap);
-    list.appendChild(row);
+    const controls = document.createElement('div');
+    controls.className = 'member-controls';
+    controls.append(toggle, valWrap);
+
+    row.append(icon, name, stepper, controls, quick);
+    $('step' + c.step + 'List').appendChild(row);
   });
   updateHeadcount();
 }
 
 function changeCount(i, delta, out, row) {
   const c = state.categories[i];
+  const before = c.count;
   c.count = Math.max(0, Math.min(99, c.count + delta));
+  if (c.count === before) return;
   out.textContent = c.count;
+  out.classList.remove('bump');
+  void out.offsetWidth; // アニメーション再生用
+  out.classList.add('bump');
   row.classList.toggle('is-empty', c.count === 0);
   updateHeadcount();
   saveSettings();
+  updatePreview();
+}
+
+/* 各ステップの下に「ここまでの残り」を表示 */
+function updatePreview() {
+  const total = Math.round(Number($('totalInput').value));
+  const foots = [1, 2, 3].map((n) => $('step' + n + 'Foot'));
+  foots.forEach((f) => { f.classList.remove('is-error'); f.innerHTML = ''; });
+  if (!Number.isFinite(total) || total <= 0) {
+    foots[0].textContent = '💡 お会計の総額を入れると、ここに残りの金額が出ます';
+    return;
+  }
+
+  const fixedOf = (step) => state.categories
+    .filter((c) => c.step === step && c.count > 0 && c.mode === 'fixed')
+    .reduce((sum, c) => sum + c.value * c.count, 0);
+  const span = (cls, text) => '<span class="' + cls + '">' + text + '</span>';
+  const money = (n) => span('big' + (n < 0 ? ' minus' : ''), (n < 0 ? '−' : '') + yen(Math.abs(n)));
+  const arrow = span('step-arrow', '→');
+
+  // STEP1
+  const fixed1 = fixedOf(1);
+  const rem1 = total - fixed1;
+  foots[0].innerHTML = '定額の合計 ' + yen(fixed1) + arrow + '残り ' + money(rem1);
+  if (rem1 < 0) foots[0].classList.add('is-error');
+
+  // STEP2
+  const female = state.categories.filter((c) => c.step === 2);
+  const femaleCount = female.reduce((sum, c) => sum + c.count, 0);
+  const fixed2 = fixedOf(2);
+  const rem2 = rem1 - fixed2;
+  if (femaleCount === 0) {
+    foots[1].innerHTML = '女性はいません' + arrow + '残り ' + money(rem2);
+  } else if (female.every((c) => c.mode === 'fixed' || c.count === 0)) {
+    foots[1].innerHTML = '女性の合計 ' + yen(fixed2) + arrow + '残り ' + money(rem2);
+  } else {
+    foots[1].innerHTML = '女性は「比率」なので、男性と一緒に残り ' + money(rem2) + ' を分けます';
+  }
+  if (rem2 < 0) foots[1].classList.add('is-error');
+
+  // STEP3：実際の計算結果（丸め後）をプレビュー
+  try {
+    const r = calculate(total, state.categories, Number(getRadio('unit')), getRadio('method'));
+    const ratioRows = r.rows.filter((x) => x.mode === 'ratio');
+    if (!ratioRows.length) {
+      foots[2].innerHTML = '残りを割る人がいません。男性の人数を入れてください';
+      if (r.remain > 0) foots[2].classList.add('is-error');
+      return;
+    }
+    foots[2].innerHTML = ratioRows.map((x) =>
+      '<div class="preview-row"><span>' + x.icon + ' ' + x.label + ' 1人あたり</span><span>' +
+      money(x.per) + ' ' + span('preview-raw', '（丸める前 約' + yen(x.raw) + '）') + '</span></div>'
+    ).join('');
+  } catch (err) {
+    foots[2].textContent = '⚠️ ' + err.message;
+    foots[2].classList.add('is-error');
+  }
 }
 
 function updateHeadcount() {
@@ -456,7 +566,7 @@ function calculate(total, categories, unit, method) {
   const rows = active.map((c) => {
     const raw = c.mode === 'fixed' ? c.value : (weightSum > 0 ? remain * c.value / weightSum : 0);
     const per = c.mode === 'fixed' ? Math.round(c.value) : roundTo(raw, unit, method);
-    return { key: c.key, label: c.label, short: c.short, mode: c.mode, value: c.value, count: c.count, raw, per, subtotal: per * c.count };
+    return { key: c.key, icon: c.icon, label: c.label, short: c.short, mode: c.mode, value: c.value, count: c.count, raw, per, subtotal: per * c.count };
   });
 
   const collected = rows.reduce((s, r) => s + r.subtotal, 0);
@@ -476,7 +586,7 @@ function onCalculate() {
     return;
   }
   try {
-    state.result = calculate(total, state.categories, Number($('unitSelect').value), $('methodSelect').value);
+    state.result = calculate(total, state.categories, Number(getRadio('unit')), getRadio('method'));
   } catch (err) {
     setMsg('calcMsg', err.message, 'error');
     $('resultBlock').hidden = true;
@@ -501,9 +611,13 @@ function renderResult() {
   r.rows.forEach((row) => {
     const tr = document.createElement('tr');
     const tdName = document.createElement('td');
-    tdName.textContent = row.label;
+    const rowIcon = document.createElement('span');
+    rowIcon.className = 'row-icon';
+    rowIcon.setAttribute('aria-hidden', 'true');
+    rowIcon.textContent = row.icon;
+    tdName.append(rowIcon, document.createTextNode(row.label));
     const tag = document.createElement('span');
-    tag.className = 'tag';
+    tag.className = 'tag' + (row.mode === 'fixed' ? ' fixed' : '');
     tag.textContent = row.mode === 'fixed' ? '定額' : '×' + row.value;
     tdName.appendChild(tag);
     const tdCount = document.createElement('td');
@@ -527,7 +641,11 @@ function renderResult() {
       ? yen(-d) + ' 足りません。ルーレットで当たった人が、その分多く払います。'
       : 'ぴったり割り切れました。ルーレットは「今日のラッキーパーソン」決めにどうぞ。';
 
-  $('resultBlock').hidden = false;
+  const block = $('resultBlock');
+  block.hidden = false;
+  block.classList.remove('is-new');
+  void block.offsetWidth;
+  block.classList.add('is-new');
   $('rouletteBlock').hidden = false;
   $('winnerBox').hidden = true;
   $('rouletteLead').textContent = d > 0
@@ -546,7 +664,7 @@ function buildCandidates() {
   state.result.rows.forEach((row) => {
     if (row.mode === 'fixed' && !includeFixed) return;
     for (let i = 1; i <= row.count; i++) {
-      list.push({ name: row.count > 1 ? row.short + i : row.short, label: row.label, per: row.per });
+      list.push({ name: row.count > 1 ? row.short + i : row.short, icon: row.icon, label: row.label, per: row.per });
     }
   });
   return list;
@@ -565,7 +683,7 @@ function setupWheel() {
 function drawWheel() {
   const canvas = $('wheel');
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const size = Math.round(canvas.getBoundingClientRect().width || 420);
+  const size = Math.round(canvas.getBoundingClientRect().width || 400);
   if (canvas.width !== size * dpr) {
     canvas.width = size * dpr;
     canvas.height = size * dpr;
@@ -576,54 +694,53 @@ function drawWheel() {
 
   const items = state.wheel.candidates;
   const c = size / 2;
-  const r = c - 2;
+  const r = c;
 
   if (!items.length) {
-    ctx.fillStyle = '#E4E8EE';
+    ctx.fillStyle = '#E9EDF2';
     ctx.beginPath();
     ctx.arc(c, c, r, 0, Math.PI * 2);
     ctx.fill();
     return;
   }
 
-  const seg = (Math.PI * 2) / items.length;
+  const n = items.length;
+  const seg = (Math.PI * 2) / n;
   ctx.save();
   ctx.translate(c, c);
   ctx.rotate(state.wheel.rotation);
   items.forEach((item, i) => {
     const start = -Math.PI / 2 + i * seg;
-    const color = WHEEL_COLORS[i % WHEEL_COLORS.length];
+    // 最後と最初が同じ色にならないように調整
+    let color = WHEEL_COLORS[i % WHEEL_COLORS.length];
+    if (n > 1 && i === n - 1 && (n - 1) % WHEEL_COLORS.length === 0) color = WHEEL_COLORS[2];
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.arc(0, 0, r, start, start + seg);
     ctx.closePath();
-    ctx.fillStyle = (items.length % WHEEL_COLORS.length === 1 && i === items.length - 1) ? WHEEL_COLORS[2] : color;
+    ctx.fillStyle = color;
     ctx.fill();
-    ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = WHEEL_INK;
+    ctx.lineWidth = 3;
     ctx.stroke();
 
+    // 名前（アイコン＋名前）
     ctx.save();
     ctx.rotate(start + seg / 2);
-    const light = ['#F2B705', '#E8D9A8'].includes(ctx.fillStyle.toUpperCase());
-    ctx.fillStyle = light ? '#172843' : '#FFFFFF';
-    const fontSize = Math.max(11, Math.min(20, size / (items.length > 12 ? 30 : 22)));
-    ctx.font = '700 ' + fontSize + 'px "BIZ UDPGothic", sans-serif';
+    const fontSize = Math.max(11, Math.min(19, size / (n > 12 ? 30 : n > 8 ? 25 : 21)));
+    ctx.font = '700 ' + fontSize + 'px "Zen Maru Gothic", sans-serif';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(item.name, r - 14, 0);
+    const label = (n <= 12 ? item.icon + ' ' : '') + item.name;
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineJoin = 'round';
+    ctx.strokeText(label, r - 16, 0);
+    ctx.fillStyle = WHEEL_INK;
+    ctx.fillText(label, r - 16, 0);
     ctx.restore();
   });
   ctx.restore();
-
-  // 中心のハブ
-  ctx.beginPath();
-  ctx.arc(c, c, size * 0.08, 0, Math.PI * 2);
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fill();
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = '#23395B';
-  ctx.stroke();
 }
 
 function secureRandom() {
@@ -696,7 +813,7 @@ function spin() {
 function announceWinner(winner) {
   const r = state.result;
   const pay = winner.per - r.diff;
-  $('winnerName').textContent = winner.name + ' さん！';
+  $('winnerName').textContent = winner.icon + ' ' + winner.name + ' さん！';
   let text;
   if (r.diff > 0) {
     text = pay >= 0
@@ -743,7 +860,7 @@ function confetti() {
 async function openAi(kind, payload) {
   const modal = $('aiModal');
   const text = $('aiText');
-  text.textContent = 'AI司会がコメントを考えています…';
+  text.textContent = 'AI司会がネタを考え中';
   text.classList.add('is-loading');
   modal.hidden = false;
   try {
@@ -780,11 +897,16 @@ function init() {
   setupAuth();
   loadSettings();
   renderMembers();
+  updatePreview();
 
   $('calcBtn').addEventListener('click', onCalculate);
   $('totalInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') onCalculate(); });
-  ['totalInput', 'unitSelect', 'methodSelect', 'organizerInput'].forEach((id) => {
+  ['totalInput', 'organizerInput'].forEach((id) => {
     $(id).addEventListener('change', saveSettings);
+  });
+  $('totalInput').addEventListener('input', updatePreview);
+  document.querySelectorAll('input[name="unit"], input[name="method"]').forEach((r) => {
+    r.addEventListener('change', () => { saveSettings(); updatePreview(); });
   });
   $('spinBtn').addEventListener('click', spin);
   $('includeFixed').addEventListener('change', () => {
