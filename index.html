@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Mochiy+Pop+One&family=Zen+Maru+Gothic:wght@500;700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=1.7.0">
+  <link rel="stylesheet" href="style.css?v=1.8.0">
 </head>
 <body>
 
@@ -126,11 +126,33 @@
       <!-- AI割り振り提案 -->
       <section class="card card-blue" aria-labelledby="h-ai">
         <h2 class="card-title" id="h-ai"><span class="title-icon" aria-hidden="true">🤖</span>AIに割り振りを相談</h2>
-        <p class="note">支払合計と単位を入れてから使えます。どんな会か・誰が来ているかを書くと、区分ごとの負担を提案します（実名は書かないでくださいね）。</p>
-        <label class="field">
+        <p class="note">支払合計と単位を入れてから使えます。どんな会か・誰が来ているかを書くか話すと、区分ごとの負担を提案します（実名は入れないでくださいね）。</p>
+        <label class="field" for="aiNote">
           <span class="field-label">どんな会？（なくてもOK）</span>
-          <textarea id="aiNote" rows="3" maxlength="400" placeholder="例：課長の送別会。主賓の課長は0円。部長が1人いるので多めに。女性3人、男性5人。"></textarea>
         </label>
+        <textarea id="aiNote" rows="4" maxlength="400" placeholder="例：課長の送別会。主賓の課長は0円。部長が1人いるので多めに。女性3人、男性5人。"></textarea>
+
+        <div class="note-tools">
+          <button type="button" class="tool-btn tool-mic" id="micBtn" aria-pressed="false">🎤 話して入力</button>
+          <button type="button" class="tool-btn" id="organizeBtn">✨ AIで整理</button>
+        </div>
+        <p class="voice-status" id="voiceStatus" aria-live="polite"></p>
+
+        <div class="voice-panel" id="voicePanel" hidden>
+          <div class="voice-block">
+            <p class="voice-head" id="voiceRawHead">🎤 聞き取った内容</p>
+            <p class="voice-text voice-raw" id="voiceRaw"></p>
+          </div>
+          <div class="voice-block">
+            <p class="voice-head">✨ AIで整理した内容</p>
+            <p class="voice-text voice-organized" id="voiceOrganized"></p>
+          </div>
+          <div class="voice-actions">
+            <button type="button" class="btn btn-primary" id="useOrganizedBtn">✨ 整理した内容を入れる</button>
+            <button type="button" class="btn btn-ghost" id="useRawBtn">そのまま入れる</button>
+            <button type="button" class="link-btn" id="voiceCancelBtn">やめる</button>
+          </div>
+        </div>
         <button type="button" class="btn btn-primary btn-wide" id="aiSuggestBtn">🤖 割り振りを提案してもらう</button>
         <p class="form-msg" id="aiSuggestMsg" role="status" aria-live="polite"></p>
 
@@ -294,7 +316,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="confetti" id="confetti" aria-hidden="true"></div>
 
-  <script src="config.js?v=1.7.0"></script>
-  <script src="script.js?v=1.7.0"></script>
+  <script src="config.js?v=1.8.0"></script>
+  <script src="script.js?v=1.8.0"></script>
 </body>
 </html>

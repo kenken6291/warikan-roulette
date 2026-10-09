@@ -2,7 +2,7 @@
 'use strict';
 
 /* バージョン表記（更新時はここと index.html の ?v= をそろえて上げる） */
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.8.0';
 const APP_UPDATED = '2026-10-09';
 
 /* GASのURLは config.js で設定 */
@@ -543,6 +543,147 @@ function updatePreview() {
     last.textContent = '⚠️ ' + err.message;
     last.classList.add('is-error');
   }
+}
+
+/* ============================================================
+ * 「どんな会？」の音声入力・AI整理
+ * ============================================================ */
+const VOICE_MAX_SECONDS = 90;
+const voice = { recorder: null, stream: null, chunks: [], timer: null, startedAt: 0, mode: 'voice', raw: '', organized: '' };
+
+function setVoiceStatus(text, isError) {
+  const el = $('voiceStatus');
+  el.textContent = text || '';
+  el.classList.toggle('is-error', !!isError);
+}
+
+function pickAudioMime() {
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+  const list = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+  return list.find((t) => MediaRecorder.isTypeSupported(t)) || '';
+}
+
+async function toggleRecording() {
+  if (voice.recorder && voice.recorder.state === 'recording') {
+    voice.recorder.stop();
+    return;
+  }
+  if (!navigator.mediaDevices || !window.MediaRecorder) {
+    setVoiceStatus('このブラウザは録音に対応していません。文字で入力して「AIで整理」を使ってください', true);
+    return;
+  }
+  try {
+    voice.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    setVoiceStatus('マイクが使えません。ブラウザの設定でマイクを許可してください', true);
+    return;
+  }
+  const mime = pickAudioMime();
+  voice.chunks = [];
+  voice.recorder = mime ? new MediaRecorder(voice.stream, { mimeType: mime }) : new MediaRecorder(voice.stream);
+  voice.recorder.addEventListener('dataavailable', (e) => { if (e.data && e.data.size) voice.chunks.push(e.data); });
+  voice.recorder.addEventListener('stop', onRecordingStop);
+  voice.recorder.start();
+  voice.startedAt = Date.now();
+
+  $('micBtn').setAttribute('aria-pressed', 'true');
+  $('micBtn').textContent = '⏹ 止める';
+  $('organizeBtn').disabled = true;
+  $('voicePanel').hidden = true;
+  const tickTimer = () => {
+    const sec = Math.floor((Date.now() - voice.startedAt) / 1000);
+    setVoiceStatus('🔴 録音中… ' + sec + '秒（最大' + VOICE_MAX_SECONDS + '秒）　話し終えたら「止める」');
+    if (sec >= VOICE_MAX_SECONDS && voice.recorder.state === 'recording') voice.recorder.stop();
+  };
+  tickTimer();
+  voice.timer = setInterval(tickTimer, 500);
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(new Error('音声の読み込みに失敗しました'));
+    r.readAsDataURL(blob);
+  });
+}
+
+async function onRecordingStop() {
+  clearInterval(voice.timer);
+  if (voice.stream) voice.stream.getTracks().forEach((t) => t.stop());
+  $('micBtn').setAttribute('aria-pressed', 'false');
+  $('micBtn').textContent = '🎤 話して入力';
+
+  const type = (voice.recorder.mimeType || 'audio/webm').split(';')[0];
+  const blob = new Blob(voice.chunks, { type });
+  const sec = (Date.now() - voice.startedAt) / 1000;
+  if (sec < 1 || blob.size < 1000) {
+    setVoiceStatus('録音が短すぎました。もう一度お試しください', true);
+    $('organizeBtn').disabled = false;
+    return;
+  }
+
+  $('micBtn').disabled = true;
+  setVoiceStatus('🤖 AIが聞き取って整理しています…');
+  try {
+    const audio = await blobToBase64(blob);
+    const r = await api('aiNote', { audio, mimeType: type });
+    showVoicePanel('voice', r.transcript, r.organized);
+    setVoiceStatus('');
+  } catch (err) {
+    setVoiceStatus(err.message, true);
+  } finally {
+    $('micBtn').disabled = false;
+    $('organizeBtn').disabled = false;
+  }
+}
+
+async function organizeTypedNote() {
+  const text = $('aiNote').value.trim();
+  if (!text) {
+    setVoiceStatus('先に文字を入れるか、「話して入力」を使ってください', true);
+    $('aiNote').focus();
+    return;
+  }
+  $('micBtn').disabled = true;
+  try {
+    await withBusy($('organizeBtn'), async () => {
+      setVoiceStatus('🤖 AIが整理しています…');
+      const r = await api('aiNote', { text });
+      showVoicePanel('text', text, r.organized);
+      setVoiceStatus('');
+    });
+  } catch (err) {
+    setVoiceStatus(err.message, true);
+  } finally {
+    $('micBtn').disabled = false;
+  }
+}
+
+function showVoicePanel(mode, raw, organized) {
+  voice.mode = mode;
+  voice.raw = raw || '';
+  voice.organized = organized || '';
+  const panel = $('voicePanel');
+  panel.classList.toggle('is-text-mode', mode === 'text');
+  $('voiceRawHead').textContent = mode === 'text' ? '✏️ いまの文章' : '🎤 聞き取った内容';
+  $('voiceRaw').textContent = voice.raw || '（聞き取れませんでした）';
+  $('voiceOrganized').textContent = voice.organized || '（整理できませんでした）';
+  $('useOrganizedBtn').textContent = mode === 'text' ? '✨ 整理した内容に置き換える' : '✨ 整理した内容を入れる';
+  $('useOrganizedBtn').disabled = !voice.organized;
+  $('useRawBtn').disabled = !voice.raw;
+  panel.hidden = false;
+}
+
+/* 音声のときは今の文章の後ろに追加、AI整理のときは置き換え */
+function insertNote(text, replace) {
+  const area = $('aiNote');
+  const cur = area.value.trim();
+  const next = (replace || !cur) ? text : cur + '\n' + text;
+  area.value = next.slice(0, Number(area.maxLength) > 0 ? Number(area.maxLength) : 400);
+  $('voicePanel').hidden = true;
+  toast('「どんな会？」に入れました');
+  area.focus();
 }
 
 /* ============================================================
@@ -1167,6 +1308,11 @@ function init() {
     r.addEventListener('change', () => { saveSettings(); updatePreview(); if (state.aiProposal) discardAiProposal(); });
   });
   $('aiSuggestBtn').addEventListener('click', onAiSuggest);
+  $('micBtn').addEventListener('click', toggleRecording);
+  $('organizeBtn').addEventListener('click', organizeTypedNote);
+  $('useOrganizedBtn').addEventListener('click', () => insertNote(voice.organized, voice.mode === 'text'));
+  $('useRawBtn').addEventListener('click', () => insertNote(voice.raw, false));
+  $('voiceCancelBtn').addEventListener('click', () => { $('voicePanel').hidden = true; });
   $('aiApplyBtn').addEventListener('click', applyAiProposal);
   $('aiDiscardBtn').addEventListener('click', discardAiProposal);
   $('spinBtn').addEventListener('click', onSpinClick);

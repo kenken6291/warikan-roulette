@@ -8,7 +8,7 @@
  *  - ログイン中の任意のパスワード変更（現在のパスワードが必要）
  *  - パスワード再発行（仮パスワード再送）
  *  - セッション（CacheService、sessionVersion で一括無効化）
- *  - Gemini API による AI コメント生成・割り振り提案（キーは Script Properties のみ）
+ *  - Gemini API による AI コメント生成・割り振り提案・音声メモの文字起こしと整理（キーは Script Properties のみ）
  *
  * Script Properties:
  *  - GEMINI_API_KEY : 必須（AIコメント用）
@@ -29,7 +29,9 @@ const CONFIG = {
   TEMP_PW_HOURS: 24,
   RESET_COOLDOWN_SECONDS: 180,
   AI_LIMIT_PER_HOUR: 30,
-  DEFAULT_GEMINI_MODEL: 'gemini-2.5-flash'
+  DEFAULT_GEMINI_MODEL: 'gemini-3.5-flash',
+  // 指定モデルが終了（404）していたときに順に試す予備モデル
+  FALLBACK_GEMINI_MODELS: ['gemini-3.5-flash', 'gemini-3.1-flash-lite']
 };
 
 const USER_HEADERS = [
@@ -62,7 +64,8 @@ function doPost(e) {
       verify: handleVerify_,
       logout: handleLogout_,
       aiComment: handleAiComment_,
-      aiAllocate: handleAiAllocate_
+      aiAllocate: handleAiAllocate_,
+      aiNote: handleAiNote_
     };
     const fn = handlers[String(req.action || '')];
     if (!fn) throw new AppError('不明な操作です');
@@ -307,6 +310,70 @@ function handleAiComment_(req) {
   }
 }
 
+/* ---------- 「どんな会？」の音声文字起こし・AI整理 ---------- */
+
+const AUDIO_MIME_OK = ['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg', 'audio/wav', 'audio/aac', 'audio/x-m4a'];
+const AUDIO_MAX_BASE64 = 8 * 1024 * 1024; // 約6MB
+
+function handleAiNote_(req) {
+  const session = requireSession_(req.token, false);
+  const audio = String(req.audio || '');
+  const text = String(req.text || '').trim().slice(0, 800);
+  if (!audio && !text) throw new AppError('音声か文章を入れてください');
+  if (audio.length > AUDIO_MAX_BASE64) throw new AppError('録音が長すぎます。90秒以内でお願いします');
+  let mime = String(req.mimeType || 'audio/webm').split(';')[0].toLowerCase();
+  if (AUDIO_MIME_OK.indexOf(mime) < 0) mime = 'audio/webm';
+
+  if (!useAiQuota_(session.userId)) {
+    throw new AppError('AIの利用上限（1時間' + CONFIG.AI_LIMIT_PER_HOUR + '回）に達しました。少し時間をおいてお試しください');
+  }
+
+  const rules = [
+    'あなたは飲み会・宴会の幹事を手伝うアシスタントです。',
+    '幹事が「どんな会か・誰が来るか・支払いの希望」を説明しています。',
+    '割り勘の割り振りをAIに相談するためのメモとして、短く整理してください。',
+    '',
+    '整理のルール:',
+    '- 区分は「主賓」「招待客」「年長者」「若手（女性）」「若手（男性）」「女性」「男性」。人数や支払いの希望がわかる区分だけ書く。',
+    '- 1区分を1行にし、「・主賓：課長1人（0円）」のように書く。会の種類があれば1行目に書く。',
+    '- 話していないことは足さない。人数があいまいなら「約」をつける。',
+    '- 人の実名は書かず、役職や「同僚」などに置き換える。',
+    '- 全体で200文字以内。'
+  ];
+
+  let parts;
+  if (audio) {
+    parts = [
+      { inlineData: { mimeType: mime, data: audio } },
+      { text: rules.concat([
+        '',
+        'まず音声をそのまま日本語で文字起こしし（transcript、実名は役職などに置き換え、言いよどみは除く）、',
+        '次にルールに沿って整理した内容（organized）を作ってください。',
+        '次の形式のJSONだけを出力: {"transcript":"...","organized":"..."}'
+      ]).join('\n') }
+    ];
+  } else {
+    parts = [{ text: rules.concat([
+      '',
+      '幹事の文章: 「' + text + '」',
+      '次の形式のJSONだけを出力: {"organized":"..."}'
+    ]).join('\n') }];
+  }
+
+  let parsed;
+  try {
+    parsed = parseJsonLoose_(callGemini_(parts, { json: true, temperature: 0.2 }));
+  } catch (err) {
+    console.error('Gemini note error: ' + (err && err.message));
+    throw new AppError(geminiMessage_(err));
+  }
+  const clean = v => String(v || '').trim().slice(0, 400);
+  const organized = clean(parsed && parsed.organized);
+  const transcript = audio ? clean(parsed && parsed.transcript) : text;
+  if (!organized && !transcript) throw new AppError('うまく聞き取れませんでした。もう一度ゆっくり話してみてください');
+  return { ok: true, transcript: transcript, organized: organized };
+}
+
 /* ---------- AI割り振り提案 ---------- */
 
 const CATEGORY_DEFS = [
@@ -341,11 +408,10 @@ function handleAiAllocate_(req) {
   const prompt = buildAllocatePrompt_(total, unit, method, note, current);
   let parsed;
   try {
-    const text = callGemini_(prompt, { json: true, temperature: 0.4 });
-    parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+    parsed = parseJsonLoose_(callGemini_(prompt, { json: true, temperature: 0.4 }));
   } catch (err) {
-    console.error('Gemini allocate error: ' + err);
-    throw new AppError('AIの提案を取得できませんでした。もう一度お試しください');
+    console.error('Gemini allocate error: ' + (err && err.message));
+    throw new AppError(geminiMessage_(err));
   }
 
   const categories = normalizeCategories_(parsed && parsed.categories, current, total, unit);
@@ -611,40 +677,136 @@ function buildPrompt_(kind, p) {
   ].join('\n');
 }
 
+class GeminiError extends Error {
+  constructor(code, detail) {
+    super(code + ': ' + detail);
+    this.code = code;       // NO_KEY / NOT_FOUND / QUOTA / AUTH / HTTP / EMPTY / PARSE
+    this.detail = detail;
+  }
+}
+
+/** Geminiのエラーを利用者向けの文に */
+function geminiMessage_(err) {
+  const code = err && err.code;
+  if (code === 'NO_KEY') return 'AIの設定（APIキー）がまだです。管理者に連絡してください';
+  if (code === 'AUTH') return 'AIのAPIキーが無効です。管理者に連絡してください';
+  if (code === 'NOT_FOUND') return 'AIのモデルが使えなくなっています。管理者に連絡してください';
+  if (code === 'QUOTA') return 'AIが混み合っています（利用上限）。少し時間をおいてお試しください';
+  if (code === 'PARSE' || code === 'EMPTY') return 'AIの返事をうまく読み取れませんでした。もう一度お試しください';
+  return 'AIの提案を取得できませんでした。もう一度お試しください';
+}
+
 /**
- * @param {string} prompt
+ * Gemini を呼び出す。指定モデルが 404（終了・未提供）なら予備モデルを順に試す。
+ * @param {string|Array} prompt 文字列、または parts 配列（音声などを含める場合）
  * @param {{json?: boolean, temperature?: number}} opts
  */
 function callGemini_(prompt, opts) {
   opts = opts || {};
   const props = PropertiesService.getScriptProperties();
   const key = props.getProperty('GEMINI_API_KEY');
-  if (!key) throw new Error('GEMINI_API_KEY not set');
-  const model = props.getProperty('GEMINI_MODEL') || CONFIG.DEFAULT_GEMINI_MODEL;
+  if (!key) throw new GeminiError('NO_KEY', 'GEMINI_API_KEY が未設定');
+
+  const preferred = (props.getProperty('GEMINI_MODEL') || '').trim() || CONFIG.DEFAULT_GEMINI_MODEL;
+  const models = [preferred].concat(CONFIG.FALLBACK_GEMINI_MODELS.filter(m => m !== preferred));
+
+  let lastErr = null;
+  for (let i = 0; i < models.length; i++) {
+    try {
+      return requestGemini_(key, models[i], prompt, opts);
+    } catch (err) {
+      lastErr = err;
+      console.error('Gemini [' + models[i] + '] ' + err.message);
+      if (!(err instanceof GeminiError) || err.code !== 'NOT_FOUND') throw err;
+    }
+  }
+  throw lastErr;
+}
+
+function requestGemini_(key, model, prompt, opts) {
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
   const generationConfig = {
     temperature: opts.temperature == null ? 1.0 : opts.temperature,
-    maxOutputTokens: opts.json ? 4096 : 1024
+    maxOutputTokens: opts.json ? 8192 : 2048
   };
   if (opts.json) generationConfig.responseMimeType = 'application/json';
+
   const res = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
     headers: { 'x-goog-api-key': key },
     muteHttpExceptions: true,
     payload: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      contents: [{ role: 'user', parts: Array.isArray(prompt) ? prompt : [{ text: prompt }] }],
       generationConfig: generationConfig
     })
   });
-  if (res.getResponseCode() !== 200) {
-    throw new Error('HTTP ' + res.getResponseCode() + ' ' + res.getContentText().slice(0, 300));
+
+  const status = res.getResponseCode();
+  const body = res.getContentText();
+  if (status !== 200) {
+    const detail = 'HTTP ' + status + ' ' + body.slice(0, 300);
+    if (status === 404) throw new GeminiError('NOT_FOUND', detail);
+    if (status === 429) throw new GeminiError('QUOTA', detail);
+    if (status === 401 || status === 403) throw new GeminiError('AUTH', detail);
+    if (status === 400 && /API key/i.test(body)) throw new GeminiError('AUTH', detail);
+    throw new GeminiError('HTTP', detail);
   }
-  const data = JSON.parse(res.getContentText());
-  const parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
+
+  const data = JSON.parse(body);
+  const cand = (data.candidates || [])[0] || {};
+  const parts = (cand.content || {}).parts || [];
   const text = parts.filter(x => x.text && !x.thought).map(x => x.text).join('').trim();
-  if (!text) throw new Error('empty response');
+  if (!text) throw new GeminiError('EMPTY', 'finishReason=' + (cand.finishReason || 'unknown') + ' model=' + model);
   return opts.json ? text : text.slice(0, 400);
+}
+
+/** 返答テキストから JSON オブジェクトを取り出す（```json 付きや前置きにも対応） */
+function parseJsonLoose_(text) {
+  const cleaned = String(text).replace(/```json|```/g, '').trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch (_) {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try { return JSON.parse(cleaned.slice(start, end + 1)); } catch (e) { /* 下で投げる */ }
+    }
+    throw new GeminiError('PARSE', cleaned.slice(0, 200));
+  }
+}
+
+/* ============================================================
+ * 動作確認用（GASエディタから手動実行 → 実行ログを確認）
+ * ============================================================ */
+
+/** Gemini に短い質問をして、使われたモデルと返答をログに出す */
+function testGemini() {
+  const props = PropertiesService.getScriptProperties();
+  console.log('GEMINI_MODEL = ' + (props.getProperty('GEMINI_MODEL') || '(未設定→' + CONFIG.DEFAULT_GEMINI_MODEL + ')'));
+  console.log('GEMINI_API_KEY = ' + (props.getProperty('GEMINI_API_KEY') ? '設定済み' : '未設定'));
+  try {
+    const text = callGemini_('「乾杯」と一言だけ返してください。', { temperature: 0 });
+    console.log('OK: ' + text);
+    const json = callGemini_('{"ok":true} というJSONだけを返してください。', { json: true, temperature: 0 });
+    console.log('JSON OK: ' + JSON.stringify(parseJsonLoose_(json)));
+  } catch (err) {
+    console.error('NG: ' + err.message);
+  }
+}
+
+/** このAPIキーで使える Flash 系モデルの一覧をログに出す */
+function listGeminiModels() {
+  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  if (!key) { console.error('GEMINI_API_KEY が未設定です'); return; }
+  const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
+    headers: { 'x-goog-api-key': key },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) { console.error(res.getContentText()); return; }
+  (JSON.parse(res.getContentText()).models || [])
+    .filter(m => (m.supportedGenerationMethods || []).indexOf('generateContent') >= 0 && /flash/.test(m.name))
+    .forEach(m => console.log(m.name.replace('models/', '') + '  ' + (m.displayName || '')));
 }
 
 function fallbackComment_(kind) {

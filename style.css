@@ -151,6 +151,55 @@ button, input, select { font: inherit; color: inherit; }
 .card-lemon .card-title { background: var(--lemon-soft); }
 .card-blue .card-title { background: #DCE7FC; }
 
+/* 音声入力・AI整理 */
+#aiNote { margin-bottom: 10px; }
+.note-tools { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tool-btn {
+  min-height: 46px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: #fff;
+  font-weight: 900;
+  font-size: 0.95rem;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.tool-btn:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: none; }
+.tool-btn:disabled { opacity: .55; cursor: not-allowed; }
+.tool-mic[aria-pressed="true"] {
+  background: var(--ng);
+  color: #fff;
+  animation: rec 1.2s ease-in-out infinite;
+}
+@keyframes rec { 50% { box-shadow: 0 0 0 6px rgba(224, 71, 91, 0.25); } }
+.voice-status { min-height: 1.4em; margin: 8px 0 12px; font-size: 0.9rem; font-weight: 700; color: var(--muted); }
+.voice-status.is-error { color: var(--ng); }
+.voice-panel {
+  margin: 0 0 16px;
+  padding: 14px;
+  border: 2.5px solid var(--ink);
+  border-radius: 18px;
+  background: #EEF3FD;
+  animation: pop .35s cubic-bezier(.2, 1.4, .4, 1) both;
+}
+.voice-block + .voice-block { margin-top: 10px; }
+.voice-head { margin: 0 0 4px; font-size: 0.85rem; font-weight: 900; }
+.voice-text {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff;
+  white-space: pre-wrap;
+  line-height: 1.7;
+}
+.voice-raw { color: var(--muted); font-size: 0.92rem; }
+.voice-organized { font-weight: 700; border: 2px solid var(--blue); }
+.voice-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.voice-actions .btn { padding: 8px 10px; font-size: 0.92rem; min-height: 48px; }
+.voice-actions .link-btn { grid-column: 1 / -1; justify-self: center; }
+.voice-panel.is-text-mode #useRawBtn { display: none; }
+.voice-panel.is-text-mode .voice-actions { grid-template-columns: 1fr; }
+
 /* AI割り振り提案 */
 .ai-proposal {
   margin-top: 16px;
