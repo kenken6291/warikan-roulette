@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Mochiy+Pop+One&family=Zen+Maru+Gothic:wght@500;700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=1.4.0">
+  <link rel="stylesheet" href="style.css?v=1.7.0">
 </head>
 <body>
 
@@ -89,9 +89,9 @@
     <section id="appView" hidden>
 
       <section class="card card-orange" aria-labelledby="h-basic">
-        <h2 class="card-title" id="h-basic"><span class="title-icon" aria-hidden="true">🧾</span>お会計はいくら？</h2>
+        <h2 class="card-title" id="h-basic"><span class="title-icon" aria-hidden="true">🧾</span>まずは支払合計と単位</h2>
         <label class="field field-total">
-          <span class="sr-only">総額</span>
+          <span class="field-label">💴 支払合計</span>
           <span class="yen-input">
             <input type="number" id="totalInput" inputmode="numeric" min="0" step="1" placeholder="45000">
             <span class="unit">円</span>
@@ -123,7 +123,34 @@
         </label>
       </section>
 
-      <!-- 入力ステップ：定額の人 → 女性 → 残りを男性 -->
+      <!-- AI割り振り提案 -->
+      <section class="card card-blue" aria-labelledby="h-ai">
+        <h2 class="card-title" id="h-ai"><span class="title-icon" aria-hidden="true">🤖</span>AIに割り振りを相談</h2>
+        <p class="note">支払合計と単位を入れてから使えます。どんな会か・誰が来ているかを書くと、区分ごとの負担を提案します（実名は書かないでくださいね）。</p>
+        <label class="field">
+          <span class="field-label">どんな会？（なくてもOK）</span>
+          <textarea id="aiNote" rows="3" maxlength="400" placeholder="例：課長の送別会。主賓の課長は0円。部長が1人いるので多めに。女性3人、男性5人。"></textarea>
+        </label>
+        <button type="button" class="btn btn-primary btn-wide" id="aiSuggestBtn">🤖 割り振りを提案してもらう</button>
+        <p class="form-msg" id="aiSuggestMsg" role="status" aria-live="polite"></p>
+
+        <div class="ai-proposal" id="aiProposal" hidden>
+          <p class="ai-reason" id="aiReason"></p>
+          <table class="proposal-table">
+            <thead>
+              <tr><th scope="col">区分</th><th scope="col">人数</th><th scope="col">負担</th><th scope="col">1人あたり</th></tr>
+            </thead>
+            <tbody id="aiProposalRows"></tbody>
+          </table>
+          <p class="proposal-sum" id="aiProposalSum"></p>
+          <div class="proposal-actions">
+            <button type="button" class="btn btn-primary" id="aiApplyBtn">✅ この提案を使う</button>
+            <button type="button" class="btn btn-ghost" id="aiDiscardBtn">やめる</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 入力ステップ：定額の人 → 若手（女性→男性） → 女性 → 残りを男性 -->
       <section class="card card-pink step" aria-labelledby="h-step1">
         <h2 class="card-title" id="h-step1"><span class="step-num" aria-hidden="true">1</span>金額が決まってる人</h2>
         <p class="note">主賓・招待客・年長者など。1人あたりの金額を入れます（0円ならごちそう）。いない区分は0人のままでOK。</p>
@@ -131,18 +158,25 @@
         <p class="step-foot" id="step1Foot" aria-live="polite"></p>
       </section>
 
-      <section class="card card-lemon step" aria-labelledby="h-step2">
-        <h2 class="card-title" id="h-step2"><span class="step-num" aria-hidden="true">2</span>女性の頭割り</h2>
-        <p class="note">女性1人あたりの金額を決めます。男性と同じく残りを分け合うなら「比率」に切り替えてください。</p>
+      <section class="card card-blue step" aria-labelledby="h-step2">
+        <h2 class="card-title" id="h-step2"><span class="step-num" aria-hidden="true">2</span>若手の頭割り</h2>
+        <p class="note">若手女性、若手男性の順に、1人あたりの金額を決めます。みんなと一緒に残りを分けるなら「比率」に（0.8なら一般の8割）。</p>
         <div class="members" id="step2List"></div>
         <p class="step-foot" id="step2Foot" aria-live="polite"></p>
       </section>
 
-      <section class="card card-mint step" aria-labelledby="h-step3">
-        <h2 class="card-title" id="h-step3"><span class="step-num" aria-hidden="true">3</span>残りを男性で割る</h2>
-        <p class="note">ここまでの残りを男性で割ります。</p>
+      <section class="card card-lemon step" aria-labelledby="h-step3">
+        <h2 class="card-title" id="h-step3"><span class="step-num" aria-hidden="true">3</span>女性の頭割り</h2>
+        <p class="note">女性1人あたりの金額を決めます。男性と同じく残りを分け合うなら「比率」に切り替えてください。</p>
         <div class="members" id="step3List"></div>
-        <div class="step-foot step-foot-final" id="step3Foot" aria-live="polite"></div>
+        <p class="step-foot" id="step3Foot" aria-live="polite"></p>
+      </section>
+
+      <section class="card card-mint step" aria-labelledby="h-step4">
+        <h2 class="card-title" id="h-step4"><span class="step-num" aria-hidden="true">4</span>残りを男性で割る</h2>
+        <p class="note">ここまでの残りを男性で割ります。</p>
+        <div class="members" id="step4List"></div>
+        <div class="step-foot step-foot-final" id="step4Foot" aria-live="polite"></div>
       </section>
 
       <p class="headcount">ぜんぶで <strong id="headcount">0</strong> 人</p>
@@ -179,6 +213,14 @@
       <section class="card card-pink roulette" id="rouletteBlock" hidden aria-labelledby="h-roulette">
         <h2 class="card-title" id="h-roulette"><span class="title-icon" aria-hidden="true">🎯</span>ハンパ・ルーレット</h2>
         <p class="roulette-lead" id="rouletteLead"></p>
+        <fieldset class="chips-field">
+          <legend class="field-label">当たりの決め方</legend>
+          <div class="chips chips-2">
+            <label class="chip"><input type="radio" name="rouletteMode" value="unit" checked><span>🎰 単位ごとに当たり</span></label>
+            <label class="chip"><input type="radio" name="rouletteMode" value="single"><span>🎯 1人にまとめて</span></label>
+          </div>
+        </fieldset>
+        <p class="roulette-plan" id="roulettePlan" aria-live="polite"></p>
         <label class="check">
           <input type="checkbox" id="includeFixed">
           <span>定額の人（主賓・招待客など）も参加させる</span>
@@ -190,10 +232,11 @@
         </div>
         <button type="button" class="btn btn-spin" id="spinBtn">ぐるぐる回す！</button>
         <div class="winner" id="winnerBox" hidden aria-live="polite">
-          <p class="winner-label">🎉 決まりました 🎉</p>
+          <p class="winner-label" id="winnerLabel">🎉 決まりました 🎉</p>
           <p class="winner-name" id="winnerName"></p>
           <p class="winner-pay" id="winnerPay"></p>
         </div>
+        <ol class="winner-list" id="winnerList" aria-label="当たった人の一覧"></ol>
       </section>
 
     </section>
@@ -251,7 +294,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <div class="confetti" id="confetti" aria-hidden="true"></div>
 
-  <script src="config.js?v=1.4.0"></script>
-  <script src="script.js?v=1.4.0"></script>
+  <script src="config.js?v=1.7.0"></script>
+  <script src="script.js?v=1.7.0"></script>
 </body>
 </html>

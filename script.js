@@ -2,7 +2,7 @@
 'use strict';
 
 /* バージョン表記（更新時はここと index.html の ?v= をそろえて上げる） */
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.7.0';
 const APP_UPDATED = '2026-10-09';
 
 /* GASのURLは config.js で設定 */
@@ -12,7 +12,8 @@ const GAS_URL_READY = /^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.
 const TOKEN_KEY = 'warikan_token';
 const SETTINGS_KEY = 'warikan_settings_v2';
 
-// step: 1=金額が決まってる人 / 2=女性の頭割り / 3=残りを男性で割る（入力・表示の順番）
+// step: 1=金額が決まってる人 / 2=若手の頭割り（若手女性→若手男性） / 3=女性の頭割り / 4=残りを男性で割る
+// 並び順＝入力・伝票・ルーレットの表示順
 const DEFAULT_CATEGORIES = [
   { key: 'guestM',  step: 1, icon: '🤵', label: '主賓（男性）',   short: '主賓男性', mode: 'fixed', value: 0,     count: 0 },
   { key: 'guestF',  step: 1, icon: '👑', label: '主賓（女性）',   short: '主賓女性', mode: 'fixed', value: 0,     count: 0 },
@@ -20,9 +21,12 @@ const DEFAULT_CATEGORIES = [
   { key: 'inviteF', step: 1, icon: '💐', label: '招待客（女性）', short: '招待女性', mode: 'fixed', value: 0,     count: 0 },
   { key: 'seniorM', step: 1, icon: '👴', label: '年長者（男性）', short: '年長男性', mode: 'fixed', value: 10000, count: 0 },
   { key: 'seniorF', step: 1, icon: '👵', label: '年長者（女性）', short: '年長女性', mode: 'fixed', value: 10000, count: 0 },
-  { key: 'female',  step: 2, icon: '🙋‍♀️', label: '女性',         short: '女性',     mode: 'fixed', value: 3000,  count: 2 },
-  { key: 'male',    step: 3, icon: '🙋‍♂️', label: '男性',         short: '男性',     mode: 'ratio', value: 1,     count: 2 }
+  { key: 'youngF',  step: 2, icon: '💁‍♀️', label: '若手（女性）', short: '若手女性', mode: 'fixed', value: 2000, count: 0, quick: [0, 1000, 2000, 3000] },
+  { key: 'youngM',  step: 2, icon: '💁‍♂️', label: '若手（男性）', short: '若手男性', mode: 'fixed', value: 2000, count: 0, quick: [0, 1000, 2000, 3000] },
+  { key: 'female',  step: 3, icon: '🙋‍♀️', label: '女性',         short: '女性',     mode: 'fixed', value: 3000,  count: 2 },
+  { key: 'male',    step: 4, icon: '🙋‍♂️', label: '男性',         short: '男性',     mode: 'ratio', value: 1,     count: 2 }
 ];
+const STEPS = [1, 2, 3, 4];
 const QUICK_AMOUNTS = [0, 3000, 5000, 10000];
 
 const WHEEL_COLORS = ['#FF8A3D', '#2EC4A0', '#FFD23F', '#FF6F91', '#5B8DEF', '#B48CF2', '#FFB4A2', '#7BD389'];
@@ -34,7 +38,8 @@ const state = {
   pwMode: 'initial', // 'initial'=初期設定 / 'change'=任意の変更
   categories: [],
   result: null,
-  wheel: { rotation: 0, spinning: false, candidates: [] }
+  aiProposal: null,
+  wheel: { rotation: 0, spinning: false, candidates: [], all: [], mode: 'unit', plan: [], hitIndex: 0, winners: [], done: false }
 };
 
 const $ = (id) => document.getElementById(id);
@@ -335,6 +340,7 @@ function loadSettings() {
     if (saved.unit) setRadio('unit', saved.unit);
     if (saved.method) setRadio('method', saved.method);
     if (saved.organizer) $('organizerInput').value = saved.organizer;
+    if (saved.rouletteMode) setRadio('rouletteMode', saved.rouletteMode);
   }
 }
 
@@ -344,13 +350,14 @@ function saveSettings() {
     unit: getRadio('unit'),
     method: getRadio('method'),
     organizer: $('organizerInput').value,
+    rouletteMode: getRadio('rouletteMode'),
     categories: state.categories.map(({ key, mode, value, count }) => ({ key, mode, value, count }))
   };
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(data)); } catch (_) { /* 容量超過などは無視 */ }
 }
 
 function renderMembers() {
-  [1, 2, 3].forEach((n) => { $('step' + n + 'List').innerHTML = ''; });
+  STEPS.forEach((n) => { $('step' + n + 'List').innerHTML = ''; });
   state.categories.forEach((c, i) => {
     const row = document.createElement('div');
     row.className = 'member' + (c.count === 0 ? ' is-empty' : '');
@@ -410,7 +417,7 @@ function renderMembers() {
     // 定額のクイック入力
     const quick = document.createElement('div');
     quick.className = 'quick-amounts';
-    QUICK_AMOUNTS.forEach((amt) => {
+    (c.quick || QUICK_AMOUNTS).forEach((amt) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = amt === 0 ? '0円' : amt.toLocaleString('ja-JP') + '円';
@@ -478,59 +485,162 @@ function changeCount(i, delta, out, row) {
 }
 
 /* 各ステップの下に「ここまでの残り」を表示 */
+const STEP_GROUP_NAMES = { 2: '若手', 3: '女性' };
+
 function updatePreview() {
   const total = Math.round(Number($('totalInput').value));
-  const foots = [1, 2, 3].map((n) => $('step' + n + 'Foot'));
+  const foots = STEPS.map((n) => $('step' + n + 'Foot'));
   foots.forEach((f) => { f.classList.remove('is-error'); f.innerHTML = ''; });
   if (!Number.isFinite(total) || total <= 0) {
-    foots[0].textContent = '💡 お会計の総額を入れると、ここに残りの金額が出ます';
+    foots[0].textContent = '💡 支払合計を入れると、ここに残りの金額が出ます';
     return;
   }
 
-  const fixedOf = (step) => state.categories
-    .filter((c) => c.step === step && c.count > 0 && c.mode === 'fixed')
-    .reduce((sum, c) => sum + c.value * c.count, 0);
   const span = (cls, text) => '<span class="' + cls + '">' + text + '</span>';
   const money = (n) => span('big' + (n < 0 ? ' minus' : ''), (n < 0 ? '−' : '') + yen(Math.abs(n)));
   const arrow = span('step-arrow', '→');
 
-  // STEP1
-  const fixed1 = fixedOf(1);
-  const rem1 = total - fixed1;
-  foots[0].innerHTML = '定額の合計 ' + yen(fixed1) + arrow + '残り ' + money(rem1);
-  if (rem1 < 0) foots[0].classList.add('is-error');
+  // STEP1〜3：定額を順番に引いていく
+  let rem = total;
+  for (let step = 1; step <= 3; step++) {
+    const cats = state.categories.filter((c) => c.step === step);
+    const active = cats.filter((c) => c.count > 0);
+    const fixed = active.filter((c) => c.mode === 'fixed').reduce((sum, c) => sum + c.value * c.count, 0);
+    const ratio = active.filter((c) => c.mode === 'ratio');
+    rem -= fixed;
+    const foot = foots[step - 1];
+    const name = STEP_GROUP_NAMES[step];
 
-  // STEP2
-  const female = state.categories.filter((c) => c.step === 2);
-  const femaleCount = female.reduce((sum, c) => sum + c.count, 0);
-  const fixed2 = fixedOf(2);
-  const rem2 = rem1 - fixed2;
-  if (femaleCount === 0) {
-    foots[1].innerHTML = '女性はいません' + arrow + '残り ' + money(rem2);
-  } else if (female.every((c) => c.mode === 'fixed' || c.count === 0)) {
-    foots[1].innerHTML = '女性の合計 ' + yen(fixed2) + arrow + '残り ' + money(rem2);
-  } else {
-    foots[1].innerHTML = '女性は「比率」なので、男性と一緒に残り ' + money(rem2) + ' を分けます';
+    if (step === 1) {
+      foot.innerHTML = '定額の合計 ' + yen(fixed) + arrow + '残り ' + money(rem);
+    } else if (!active.length) {
+      foot.innerHTML = name + 'はいません' + arrow + '残り ' + money(rem);
+    } else if (!ratio.length) {
+      foot.innerHTML = name + 'の合計 ' + yen(fixed) + arrow + '残り ' + money(rem);
+    } else {
+      const who = ratio.map((c) => c.label).join('・');
+      foot.innerHTML = (fixed > 0 ? name + '（定額）の合計 ' + yen(fixed) + arrow + '残り ' + money(rem) + '<br>' : '') +
+        who + 'は「比率」なので、残り ' + money(rem) + ' を男性たちと一緒に分けます';
+    }
+    if (rem < 0) foot.classList.add('is-error');
   }
-  if (rem2 < 0) foots[1].classList.add('is-error');
 
-  // STEP3：実際の計算結果（丸め後）をプレビュー
+  // STEP4：実際の計算結果（丸め後）をプレビュー
+  const last = foots[3];
   try {
     const r = calculate(total, state.categories, Number(getRadio('unit')), getRadio('method'));
     const ratioRows = r.rows.filter((x) => x.mode === 'ratio');
     if (!ratioRows.length) {
-      foots[2].innerHTML = '残りを割る人がいません。男性の人数を入れてください';
-      if (r.remain > 0) foots[2].classList.add('is-error');
+      last.innerHTML = '残りを割る人がいません。男性の人数を入れてください';
+      if (r.remain > 0) last.classList.add('is-error');
       return;
     }
-    foots[2].innerHTML = ratioRows.map((x) =>
+    last.innerHTML = ratioRows.map((x) =>
       '<div class="preview-row"><span>' + x.icon + ' ' + x.label + ' 1人あたり</span><span>' +
       money(x.per) + ' ' + span('preview-raw', '（丸める前 約' + yen(x.raw) + '）') + '</span></div>'
     ).join('');
   } catch (err) {
-    foots[2].textContent = '⚠️ ' + err.message;
-    foots[2].classList.add('is-error');
+    last.textContent = '⚠️ ' + err.message;
+    last.classList.add('is-error');
   }
+}
+
+/* ============================================================
+ * AI割り振り提案
+ * ============================================================ */
+async function onAiSuggest() {
+  setMsg('aiSuggestMsg', '');
+  $('aiProposal').hidden = true;
+  const total = Math.round(Number($('totalInput').value));
+  if (!Number.isFinite(total) || total <= 0) {
+    setMsg('aiSuggestMsg', '先に支払合計を入れてください', 'error');
+    $('totalInput').focus();
+    return;
+  }
+  const unit = Number(getRadio('unit'));
+  const method = getRadio('method');
+  if (!unit) {
+    setMsg('aiSuggestMsg', '先に集金の単位を選んでください', 'error');
+    return;
+  }
+  try {
+    await withBusy($('aiSuggestBtn'), async () => {
+      const r = await api('aiAllocate', {
+        total, unit, method,
+        note: $('aiNote').value.trim(),
+        categories: state.categories.map(({ key, count, mode, value }) => ({ key, count, mode, value }))
+      });
+      state.aiProposal = { ...r.proposal, total, unit, method };
+      renderAiProposal();
+    });
+  } catch (err) {
+    setMsg('aiSuggestMsg', err.message, 'error');
+  }
+}
+
+function mergeProposal(proposal) {
+  return state.categories.map((c) => {
+    const x = proposal.categories.find((y) => y.key === c.key);
+    return x ? { ...c, count: x.count, mode: x.mode, value: x.value } : { ...c };
+  });
+}
+
+function renderAiProposal() {
+  const p = state.aiProposal;
+  if (!p) return;
+  const cats = mergeProposal(p);
+  let r;
+  try {
+    r = calculate(p.total, cats, p.unit, p.method);
+  } catch (err) {
+    setMsg('aiSuggestMsg', 'AIの提案では計算できませんでした（' + err.message + '）。もう一度お試しください', 'error');
+    return;
+  }
+  $('aiReason').textContent = p.reason || 'こんな割り振りはいかがでしょう。';
+
+  const tbody = $('aiProposalRows');
+  tbody.innerHTML = '';
+  r.rows.forEach((row) => {
+    const before = state.categories.find((c) => c.key === row.key);
+    const changed = !before || before.count !== row.count || before.mode !== row.mode || before.value !== row.value;
+    const tr = document.createElement('tr');
+    const tdName = document.createElement('td');
+    tdName.textContent = row.icon + ' ' + row.label;
+    const tdCount = document.createElement('td');
+    tdCount.textContent = row.count + '人';
+    const tdMode = document.createElement('td');
+    tdMode.textContent = row.mode === 'fixed' ? '定額' : '×' + row.value;
+    const tdPer = document.createElement('td');
+    tdPer.className = 'per';
+    tdPer.textContent = yen(row.per);
+    if (changed) [tdCount, tdMode].forEach((td) => td.classList.add('changed'));
+    tr.append(tdName, tdCount, tdMode, tdPer);
+    tbody.appendChild(tr);
+  });
+
+  const d = r.diff;
+  $('aiProposalSum').textContent = '集まる金額 ' + yen(r.collected) + '（ハンパ ' +
+    (d > 0 ? '+' : d < 0 ? '−' : '±') + yen(Math.abs(d)) + '）';
+  $('aiProposal').hidden = false;
+  setMsg('aiSuggestMsg', '提案が届きました。黄色の部分が今の入力から変わるところです', 'ok');
+}
+
+function applyAiProposal() {
+  const p = state.aiProposal;
+  if (!p) return;
+  state.categories = mergeProposal(p);
+  renderMembers();
+  updatePreview();
+  saveSettings();
+  discardAiProposal();
+  toast('AIの提案を入力しました');
+  $('h-step1').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+}
+
+function discardAiProposal() {
+  state.aiProposal = null;
+  $('aiProposal').hidden = true;
+  setMsg('aiSuggestMsg', '');
 }
 
 function updateHeadcount() {
@@ -575,7 +685,7 @@ function calculate(total, categories, unit, method) {
 
   const collected = rows.reduce((s, r) => s + r.subtotal, 0);
   return {
-    total, fixedTotal, remain, rows, collected,
+    total, fixedTotal, remain, rows, collected, unit, method,
     diff: collected - total,
     people: rows.reduce((s, r) => s + r.count, 0)
   };
@@ -640,9 +750,9 @@ function renderResult() {
   diffEl.textContent = (d > 0 ? '+' : d < 0 ? '−' : '±') + yen(Math.abs(d));
   diffEl.className = d > 0 ? 'diff-plus' : d < 0 ? 'diff-minus' : '';
   $('rDiffExplain').textContent = d > 0
-    ? yen(d) + ' 多く集まります。ルーレットで当たった人が、その分安くなります。'
+    ? yen(d) + ' 多く集まります。ルーレットで当たった人が安くなります（決め方は下で選べます）。'
     : d < 0
-      ? yen(-d) + ' 足りません。ルーレットで当たった人が、その分多く払います。'
+      ? yen(-d) + ' 足りません。ルーレットで当たった人が多めに払います（決め方は下で選べます）。'
       : 'ぴったり割り切れました。ルーレットは「今日のラッキーパーソン」決めにどうぞ。';
 
   const block = $('resultBlock');
@@ -674,14 +784,107 @@ function buildCandidates() {
   return list;
 }
 
-function setupWheel() {
-  state.wheel.candidates = buildCandidates();
-  state.wheel.rotation = 0;
-  $('spinBtn').disabled = state.wheel.candidates.length === 0;
-  if (!state.wheel.candidates.length) {
-    $('rouletteLead').textContent = 'ルーレットの対象者がいません。「定額の人も対象にする」をオンにしてください。';
+/**
+ * 当たりの金額リストを作る
+ *  single: ハンパ全額を1人に
+ *  unit  : ハンパ ÷ 単位 ＝ 当たり人数（割り切れない分は1人追加）
+ */
+function buildHitPlan(diff, unit, mode, maxPeople) {
+  const abs = Math.abs(diff);
+  if (abs === 0) return [0];
+  if (mode === 'single' || !unit) return [abs];
+  const hits = [];
+  const full = Math.floor(abs / unit);
+  for (let i = 0; i < full; i++) hits.push(unit);
+  const rest = abs - full * unit;
+  if (rest > 0) hits.push(rest);
+  if (maxPeople > 0 && hits.length > maxPeople) {
+    // 対象者より当たりが多いときは、あふれた分を先頭から上乗せ
+    const merged = hits.slice(0, maxPeople);
+    hits.slice(maxPeople).forEach((amt, i) => { merged[i % maxPeople] += amt; });
+    return merged;
   }
+  return hits;
+}
+
+function setupWheel() {
+  const w = state.wheel;
+  const r = state.result;
+  w.all = buildCandidates();
+  w.candidates = w.all.slice();
+  w.rotation = 0;
+  w.mode = getRadio('rouletteMode') || 'unit';
+  w.plan = buildHitPlan(r.diff, r.unit, w.mode, w.all.length);
+  w.hitIndex = 0;
+  w.winners = [];
+  w.done = false;
+  $('winnerBox').hidden = true;
+  $('winnerList').innerHTML = '';
+  renderRoulettePlan();
+  updateSpinButton();
   drawWheel();
+}
+
+function renderRoulettePlan() {
+  const w = state.wheel;
+  const r = state.result;
+  const el = $('roulettePlan');
+  const abs = Math.abs(r.diff);
+  const big = (t) => '<span class="big">' + t + '</span>';
+  const effect = r.diff > 0 ? 'おトク' : '多めに払う';
+
+  if (!w.all.length) {
+    el.textContent = 'ルーレットの対象者がいません。「定額の人も参加させる」をオンにしてください。';
+    return;
+  }
+  if (abs === 0) {
+    el.innerHTML = 'ハンパはゼロ。' + big('1人') + 'だけ「今日のラッキーパーソン」を決めます';
+    return;
+  }
+  if (w.plan.length === 1) {
+    el.innerHTML = big('1人') + 'が ' + yen(abs) + ' まるごと' + effect + '（1回まわします）';
+    return;
+  }
+  // 金額ごとにまとめて内訳表示
+  const groups = [];
+  w.plan.forEach((amt) => {
+    const g = groups.find((x) => x.amt === amt);
+    if (g) g.n++; else groups.push({ amt, n: 1 });
+  });
+  const detail = groups.map((g) => yen(g.amt) + '×' + g.n + '人').join('＋');
+  const head = (w.mode === 'unit' && abs % r.unit === 0 && groups.length === 1)
+    ? yen(abs) + ' ÷ ' + yen(r.unit) + ' ＝ '
+    : yen(abs) + ' → ';
+  el.innerHTML = head + big(w.plan.length + '人') + 'が当たり！' +
+    '<br>当たった人は ' + (groups.length === 1 ? '1人 ' + yen(groups[0].amt) + ' ずつ' : detail + ' で') + effect +
+    '（' + w.plan.length + '回まわします）';
+}
+
+function updateSpinButton() {
+  const w = state.wheel;
+  const btn = $('spinBtn');
+  if (!w.all.length) {
+    btn.disabled = true;
+    btn.textContent = 'ぐるぐる回す！';
+    return;
+  }
+  btn.disabled = w.spinning;
+  if (w.done) {
+    btn.textContent = '🔁 もう一度はじめから';
+  } else {
+    const remaining = w.plan.length - w.hitIndex;
+    btn.textContent = w.plan.length > 1
+      ? '🎰 回す！（あと' + remaining + '回）'
+      : 'ぐるぐる回す！';
+  }
+}
+
+function onSpinClick() {
+  if (state.wheel.done) {
+    setupWheel();
+    return;
+  }
+  spin();
 }
 
 function drawWheel() {
@@ -774,7 +977,7 @@ function spin() {
   w.spinning = true;
   $('spinBtn').disabled = true;
   $('includeFixed').disabled = true;
-  $('winnerBox').hidden = true;
+  document.querySelectorAll('input[name="rouletteMode"]').forEach((x) => { x.disabled = true; });
 
   const n = w.candidates.length;
   const seg = (Math.PI * 2) / n;
@@ -806,41 +1009,90 @@ function spin() {
       requestAnimationFrame(frame);
     } else {
       w.spinning = false;
-      $('spinBtn').disabled = false;
-      $('includeFixed').disabled = false;
-      announceWinner(w.candidates[winnerIndex]);
+      onHit(winnerIndex);
     }
   };
   requestAnimationFrame(frame);
 }
 
-function announceWinner(winner) {
+function payText(h) {
   const r = state.result;
-  const pay = winner.per - r.diff;
-  $('winnerName').textContent = winner.icon + ' ' + winner.name + ' さん！';
-  let text;
   if (r.diff > 0) {
-    text = pay >= 0
-      ? '支払いは ' + yen(winner.per) + ' → ' + yen(pay) + '（' + yen(r.diff) + ' おトク）'
-      : '支払いは0円、さらに ' + yen(-pay) + ' 受け取り（' + yen(r.diff) + ' おトク）';
-  } else if (r.diff < 0) {
-    text = '支払いは ' + yen(winner.per) + ' → ' + yen(pay) + '（' + yen(-r.diff) + ' 多めに）';
-  } else {
-    text = '今日のラッキーパーソンです。支払いは ' + yen(winner.per) + ' のまま';
+    return h.pay >= 0
+      ? yen(h.per) + ' → ' + yen(h.pay) + '（' + yen(h.amount) + ' おトク）'
+      : '0円、さらに ' + yen(-h.pay) + ' 受け取り（' + yen(h.amount) + ' おトク）';
   }
-  $('winnerPay').textContent = text;
-  $('winnerBox').hidden = false;
+  if (r.diff < 0) return yen(h.per) + ' → ' + yen(h.pay) + '（' + yen(h.amount) + ' 多めに）';
+  return '今日のラッキーパーソン！支払いは ' + yen(h.per) + ' のまま';
+}
+
+function onHit(index) {
+  const w = state.wheel;
+  const r = state.result;
+  const cand = w.candidates[index];
+  const amount = w.plan[w.hitIndex];
+  const pay = cand.per + (r.diff > 0 ? -amount : r.diff < 0 ? amount : 0);
+  const hit = { ...cand, amount, pay };
+  w.winners.push(hit);
+  w.hitIndex++;
+  const multi = w.plan.length > 1;
+
+  // 最新の当たり
+  $('winnerLabel').textContent = multi
+    ? '🎉 ' + w.hitIndex + '人目の当たり 🎉'
+    : '🎉 決まりました 🎉';
+  $('winnerName').textContent = hit.icon + ' ' + hit.name + ' さん！';
+  $('winnerPay').textContent = payText(hit);
+  const box = $('winnerBox');
+  box.hidden = true;
+  void box.offsetWidth;
+  box.hidden = false;
+
+  // 当たり一覧（複数のとき）
+  if (multi) {
+    const li = document.createElement('li');
+    const name = document.createElement('span');
+    name.className = 'w-name';
+    name.textContent = hit.icon + ' ' + hit.name + ' さん';
+    const p = document.createElement('span');
+    p.className = 'w-pay';
+    p.textContent = payText(hit);
+    li.append(name, p);
+    $('winnerList').appendChild(li);
+  }
+
   confetti();
   if (navigator.vibrate) navigator.vibrate([60, 40, 120]);
 
-  openAi('roulette', {
-    winner: winner.name + '（' + winner.label + '）',
-    winnerPay: pay,
-    diff: r.diff,
-    people: r.people,
-    total: r.total,
-    organizer: $('organizerInput').value.trim()
-  });
+  w.done = w.hitIndex >= w.plan.length;
+  if (multi && !w.done) {
+    // 当たった人をルーレットから外して、少し見せてから描き直す
+    w.candidates.splice(index, 1);
+    $('spinBtn').disabled = true;
+    setTimeout(() => {
+      w.rotation = 0;
+      drawWheel();
+      updateSpinButton();
+    }, 900);
+  } else {
+    updateSpinButton();
+  }
+
+  if (w.done) {
+    $('includeFixed').disabled = false;
+    document.querySelectorAll('input[name="rouletteMode"]').forEach((x) => { x.disabled = false; });
+    openAi('roulette', {
+      mode: w.mode,
+      unit: r.unit,
+      winners: w.winners.map((x) => ({ name: x.name + '（' + x.label + '）', pay: x.pay, amount: x.amount })),
+      winner: w.winners[0].name + '（' + w.winners[0].label + '）',
+      winnerPay: w.winners[0].pay,
+      diff: r.diff,
+      people: r.people,
+      total: r.total,
+      organizer: $('organizerInput').value.trim()
+    });
+  }
 }
 
 function confetti() {
@@ -909,11 +1161,21 @@ function init() {
   ['totalInput', 'organizerInput'].forEach((id) => {
     $(id).addEventListener('change', saveSettings);
   });
-  $('totalInput').addEventListener('input', updatePreview);
+  // 支払合計・単位が変わったら、古いAI提案は取り消す
+  $('totalInput').addEventListener('input', () => { updatePreview(); if (state.aiProposal) discardAiProposal(); });
   document.querySelectorAll('input[name="unit"], input[name="method"]').forEach((r) => {
-    r.addEventListener('change', () => { saveSettings(); updatePreview(); });
+    r.addEventListener('change', () => { saveSettings(); updatePreview(); if (state.aiProposal) discardAiProposal(); });
   });
-  $('spinBtn').addEventListener('click', spin);
+  $('aiSuggestBtn').addEventListener('click', onAiSuggest);
+  $('aiApplyBtn').addEventListener('click', applyAiProposal);
+  $('aiDiscardBtn').addEventListener('click', discardAiProposal);
+  $('spinBtn').addEventListener('click', onSpinClick);
+  document.querySelectorAll('input[name="rouletteMode"]').forEach((x) => {
+    x.addEventListener('change', () => {
+      saveSettings();
+      if (state.result) setupWheel();
+    });
+  });
   $('includeFixed').addEventListener('change', () => {
     if (!state.result) return;
     $('winnerBox').hidden = true;

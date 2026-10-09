@@ -8,7 +8,7 @@
  *  - ログイン中の任意のパスワード変更（現在のパスワードが必要）
  *  - パスワード再発行（仮パスワード再送）
  *  - セッション（CacheService、sessionVersion で一括無効化）
- *  - Gemini API による AI コメント生成（キーは Script Properties のみ）
+ *  - Gemini API による AI コメント生成・割り振り提案（キーは Script Properties のみ）
  *
  * Script Properties:
  *  - GEMINI_API_KEY : 必須（AIコメント用）
@@ -61,7 +61,8 @@ function doPost(e) {
       resetPassword: handleResetPassword_,
       verify: handleVerify_,
       logout: handleLogout_,
-      aiComment: handleAiComment_
+      aiComment: handleAiComment_,
+      aiAllocate: handleAiAllocate_
     };
     const fn = handlers[String(req.action || '')];
     if (!fn) throw new AppError('不明な操作です');
@@ -293,15 +294,9 @@ function handleLogout_(req) {
 
 function handleAiComment_(req) {
   const session = requireSession_(req.token, false);
-
-  const cache = CacheService.getScriptCache();
-  const rateKey = 'ai_' + session.userId + '_' + Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMddHH');
-  const used = Number(cache.get(rateKey) || 0);
-  if (used >= CONFIG.AI_LIMIT_PER_HOUR) {
+  if (!useAiQuota_(session.userId)) {
     return { ok: true, comment: fallbackComment_(req.kind), fallback: true, note: 'AIの利用上限に達したため定型コメントです' };
   }
-  cache.put(rateKey, String(used + 1), 3700);
-
   const prompt = buildPrompt_(String(req.kind || ''), req.payload || {});
   try {
     const comment = callGemini_(prompt);
@@ -310,6 +305,123 @@ function handleAiComment_(req) {
     console.error('Gemini error: ' + err);
     return { ok: true, comment: fallbackComment_(req.kind), fallback: true };
   }
+}
+
+/* ---------- AI割り振り提案 ---------- */
+
+const CATEGORY_DEFS = [
+  { key: 'guestM',  label: '主賓（男性）' },
+  { key: 'guestF',  label: '主賓（女性）' },
+  { key: 'inviteM', label: '招待客（男性）' },
+  { key: 'inviteF', label: '招待客（女性）' },
+  { key: 'seniorM', label: '年長者（男性）' },
+  { key: 'seniorF', label: '年長者（女性）' },
+  { key: 'youngF',  label: '若手（女性）' },
+  { key: 'youngM',  label: '若手（男性）' },
+  { key: 'female',  label: '女性（一般）' },
+  { key: 'male',    label: '男性（一般）' }
+];
+const ROUND_LABELS = { ceil: '切り上げ', floor: '切り下げ', round: '四捨五入' };
+
+function handleAiAllocate_(req) {
+  const session = requireSession_(req.token, false);
+
+  const total = Math.round(Number(req.total));
+  const unit = Number(req.unit);
+  const method = ROUND_LABELS[req.method] ? req.method : 'ceil';
+  if (!(total > 0 && total <= 10000000)) throw new AppError('先に支払合計を入力してください');
+  if ([10, 100, 500, 1000].indexOf(unit) < 0) throw new AppError('先に集金の単位を選んでください');
+  const note = String(req.note || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 400);
+  const current = normalizeCategories_(req.categories, null, total, unit);
+
+  if (!useAiQuota_(session.userId)) {
+    throw new AppError('AIの利用上限（1時間' + CONFIG.AI_LIMIT_PER_HOUR + '回）に達しました。少し時間をおいてお試しください');
+  }
+
+  const prompt = buildAllocatePrompt_(total, unit, method, note, current);
+  let parsed;
+  try {
+    const text = callGemini_(prompt, { json: true, temperature: 0.4 });
+    parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+  } catch (err) {
+    console.error('Gemini allocate error: ' + err);
+    throw new AppError('AIの提案を取得できませんでした。もう一度お試しください');
+  }
+
+  const categories = normalizeCategories_(parsed && parsed.categories, current, total, unit);
+
+  // 成立チェック
+  const fixedSum = categories.filter(c => c.mode === 'fixed').reduce((s, c) => s + c.value * c.count, 0);
+  const weight = categories.filter(c => c.mode === 'ratio').reduce((s, c) => s + c.value * c.count, 0);
+  if (fixedSum > total || (total - fixedSum > 0 && weight <= 0)) {
+    throw new AppError('AIの提案が支払合計とかみ合いませんでした。メモを少し変えてもう一度お試しください');
+  }
+
+  const reason = String((parsed && parsed.reason) || '').replace(/[\r\n]+/g, ' ').slice(0, 200);
+  return { ok: true, proposal: { categories: categories, reason: reason } };
+}
+
+/**
+ * 区分データを全区分そろえて正規化する
+ * @param {Array} list 入力
+ * @param {Array|null} fallback 欠けた区分の補完元
+ */
+function normalizeCategories_(list, fallback, total, unit) {
+  const arr = Array.isArray(list) ? list : [];
+  return CATEGORY_DEFS.map(def => {
+    const src = arr.find(x => x && x.key === def.key) ||
+      (fallback ? fallback.find(x => x.key === def.key) : null) ||
+      { count: 0, mode: 'fixed', value: 0 };
+    const count = Math.max(0, Math.min(99, Math.round(Number(src.count) || 0)));
+    const mode = src.mode === 'ratio' ? 'ratio' : 'fixed';
+    let value = Number(src.value) || 0;
+    if (mode === 'fixed') {
+      value = Math.max(0, Math.min(total, Math.round(value / unit) * unit));
+    } else {
+      value = Math.max(0, Math.min(5, Math.round(value * 10) / 10));
+    }
+    return { key: def.key, label: def.label, count: count, mode: mode, value: value };
+  });
+}
+
+function buildAllocatePrompt_(total, unit, method, note, current) {
+  const lines = current.map(c =>
+    '- ' + c.key + ': ' + c.label + ' / 現在の人数 ' + c.count + '人 / 現在の設定 ' +
+    (c.mode === 'fixed' ? '定額 ' + c.value + '円' : '比率 ' + c.value)
+  ).join('\n');
+  return [
+    'あなたは宴会・飲み会の会計に慣れた、気配りのできる幹事アシスタントです。',
+    '次の条件で、参加区分ごとの負担のしかたを提案してください。',
+    '',
+    '支払合計: ' + total + '円',
+    '集金の単位: ' + unit + '円（端数は' + ROUND_LABELS[method] + '）',
+    '区分:',
+    lines,
+    '幹事からのメモ: ' + (note ? '「' + note + '」' : 'なし'),
+    '',
+    'ルール:',
+    '- mode は "fixed"（1人あたりの定額・円）か "ratio"（定額を引いた残りを重みで分ける。一般=1.0）。',
+    '- 人数はメモに指示があればそれに従い、なければ現在の人数のまま。',
+    '- メモに指示がなければ、主賓・招待客は fixed 0円（ごちそう）。',
+    '- メモに指示がなければ、年長者は ratio 1.3〜1.5 程度。',
+    '- メモに指示がなければ、若手は ratio 0.7〜0.8 程度（一般より少し軽く）。',
+    '- 男性と女性で差をつけるかはメモの指示に従う。指示がなければ男性・女性とも ratio 1.0。',
+    '- fixed の金額は集金の単位の倍数にする。fixed の合計は支払合計を超えないこと。',
+    '- 残りの金額がある場合は、ratio で払う人が1人以上いる形にすること。',
+    '- reason は提案の理由を、やさしい口調の日本語で80文字以内。人をからかう表現は禁止。',
+    '',
+    '次の形式のJSONだけを出力してください（' + CATEGORY_DEFS.length + '区分すべて含める）:',
+    '{"categories":[{"key":"guestM","count":0,"mode":"fixed","value":0}],"reason":"..."}'
+  ].join('\n');
+}
+
+function useAiQuota_(userId) {
+  const cache = CacheService.getScriptCache();
+  const rateKey = 'ai_' + userId + '_' + Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMddHH');
+  const used = Number(cache.get(rateKey) || 0);
+  if (used >= CONFIG.AI_LIMIT_PER_HOUR) return false;
+  cache.put(rateKey, String(used + 1), 3700);
+  return true;
 }
 
 /* ============================================================
@@ -454,10 +566,28 @@ function buildPrompt_(kind, p) {
 
   if (kind === 'roulette') {
     const diff = n(p.diff);
+    const abs = Math.abs(diff);
+    const winners = Array.isArray(p.winners) ? p.winners.slice(0, 20) : [];
+    const org = p.organizer ? '幹事: ' + s(p.organizer) + '（最後にひと言ねぎらうこと）' : '幹事名は不明（最後に幹事へのねぎらいをひと言入れること）';
+
+    if (winners.length > 1) {
+      const effect = diff > 0 ? '安くなる' : '多めに払う';
+      const list = winners.map(w => '・' + s(w.name) + '：' + n(w.amount) + '円' + effect + '（支払い' + n(w.pay) + '円）').join('\n');
+      return rule + '\n\n' + [
+        '状況: 割り勘のハンパ' + abs + '円を、' + n(p.unit) + '円ずつ当たりにするルーレットをしました。',
+        diff > 0 ? '（余ったお金なので、当たりはラッキー）' : '（足りないお金なので、当たりは少し多めに払う役）',
+        '当たった人（' + winners.length + '人）:',
+        list,
+        '参加人数: ' + n(p.people) + '人 / 総額: ' + n(p.total) + '円',
+        org,
+        '当たった人たちをまとめて、もっともらしい屁理屈で盛り上げてください。'
+      ].join('\n');
+    }
+
     const situation = diff > 0
-      ? '端数' + diff + '円が余ったので、当選者はその分安くなる（ボーナス）'
+      ? '端数' + abs + '円が余ったので、当選者はその分安くなる（ボーナス）'
       : diff < 0
-        ? '端数' + Math.abs(diff) + '円が足りないので、当選者がその分多く払う'
+        ? '端数' + abs + '円が足りないので、当選者がその分多く払う'
         : '端数はゼロ。当選者は「今日のラッキーパーソン」';
     return rule + '\n\n' + [
       '状況: 割り勘の端数ルーレットの結果発表です。',
@@ -465,12 +595,12 @@ function buildPrompt_(kind, p) {
       '結果: ' + situation,
       '当選者の支払額: ' + n(p.winnerPay) + '円',
       '参加人数: ' + n(p.people) + '人 / 総額: ' + n(p.total) + '円',
-      p.organizer ? '幹事: ' + s(p.organizer) + '（最後にひと言ねぎらうこと）' : '幹事名は不明（最後に幹事へのねぎらいをひと言入れること）',
+      org,
       '「なぜこの人が選ばれたのか」をもっともらしい屁理屈で説明してください。'
     ].join('\n');
   }
 
-  const rows = Array.isArray(p.rows) ? p.rows.slice(0, 8) : [];
+  const rows = Array.isArray(p.rows) ? p.rows.slice(0, 12) : [];
   const lines = rows.map(r => '・' + s(r.label) + ' ' + n(r.count) + '人：1人' + n(r.per) + '円').join('\n');
   return rule + '\n\n' + [
     '状況: 割り勘の計算結果です。この結果に、場が和む寸評をしてください。',
@@ -481,12 +611,22 @@ function buildPrompt_(kind, p) {
   ].join('\n');
 }
 
-function callGemini_(prompt) {
+/**
+ * @param {string} prompt
+ * @param {{json?: boolean, temperature?: number}} opts
+ */
+function callGemini_(prompt, opts) {
+  opts = opts || {};
   const props = PropertiesService.getScriptProperties();
   const key = props.getProperty('GEMINI_API_KEY');
   if (!key) throw new Error('GEMINI_API_KEY not set');
   const model = props.getProperty('GEMINI_MODEL') || CONFIG.DEFAULT_GEMINI_MODEL;
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
+  const generationConfig = {
+    temperature: opts.temperature == null ? 1.0 : opts.temperature,
+    maxOutputTokens: opts.json ? 4096 : 1024
+  };
+  if (opts.json) generationConfig.responseMimeType = 'application/json';
   const res = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
@@ -494,7 +634,7 @@ function callGemini_(prompt) {
     muteHttpExceptions: true,
     payload: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 1.0, maxOutputTokens: 1024 }
+      generationConfig: generationConfig
     })
   });
   if (res.getResponseCode() !== 200) {
@@ -504,7 +644,7 @@ function callGemini_(prompt) {
   const parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
   const text = parts.filter(x => x.text && !x.thought).map(x => x.text).join('').trim();
   if (!text) throw new Error('empty response');
-  return text.slice(0, 400);
+  return opts.json ? text : text.slice(0, 400);
 }
 
 function fallbackComment_(kind) {
