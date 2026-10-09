@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#23395B">
+  <title>ワリカン・ルーレット</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=Kaisei+Decol:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="masthead">
+    <div class="masthead-inner">
+      <h1 class="brand">ワリカン<span class="brand-sub">ルーレット</span></h1>
+      <div class="userbox" id="userBox" hidden>
+        <span class="user-name" id="userName"></span>
+        <button type="button" class="link-btn" id="logoutBtn">ログアウト</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+
+    <!-- ================= 認証 ================= -->
+    <section id="authView" class="auth" hidden>
+      <p class="auth-lead">宴会の会計を、傾斜つきで一発計算。<br>端数はルーレットで決めましょう。</p>
+
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab is-active" role="tab" data-tab="login" aria-selected="true">ログイン</button>
+        <button type="button" class="tab" role="tab" data-tab="register" aria-selected="false">新規登録</button>
+        <button type="button" class="tab" role="tab" data-tab="reset" aria-selected="false">パスワード再発行</button>
+      </div>
+
+      <form id="loginForm" class="auth-form" data-panel="login" novalidate>
+        <label class="field">
+          <span class="field-label">メールアドレス</span>
+          <input type="email" name="email" autocomplete="email" required>
+        </label>
+        <label class="field">
+          <span class="field-label">パスワード</span>
+          <span class="pw-field">
+            <input type="password" name="password" autocomplete="current-password" required>
+          </span>
+        </label>
+        <button type="submit" class="btn btn-primary">ログイン</button>
+      </form>
+
+      <form id="registerForm" class="auth-form" data-panel="register" hidden novalidate>
+        <label class="field">
+          <span class="field-label">ニックネーム</span>
+          <input type="text" name="nickname" maxlength="20" autocomplete="nickname" required>
+        </label>
+        <label class="field">
+          <span class="field-label">メールアドレス</span>
+          <input type="email" name="email" autocomplete="email" required>
+        </label>
+        <p class="note">仮パスワードをこのアドレスにお送りします。</p>
+        <button type="submit" class="btn btn-primary">登録して仮パスワードを受け取る</button>
+      </form>
+
+      <form id="resetForm" class="auth-form" data-panel="reset" hidden novalidate>
+        <label class="field">
+          <span class="field-label">登録したメールアドレス</span>
+          <input type="email" name="email" autocomplete="email" required>
+        </label>
+        <p class="note">新しい仮パスワードをお送りします。届いたら、ログイン後に変更してください。</p>
+        <button type="submit" class="btn btn-primary">仮パスワードを再発行する</button>
+      </form>
+
+      <p class="form-msg" id="authMsg" role="status" aria-live="polite"></p>
+    </section>
+
+    <!-- ================= アプリ本体 ================= -->
+    <section id="appView" hidden>
+
+      <section class="block" aria-labelledby="h-basic">
+        <h2 class="block-title" id="h-basic">お会計</h2>
+        <label class="field field-total">
+          <span class="field-label">総額</span>
+          <span class="yen-input">
+            <input type="number" id="totalInput" inputmode="numeric" min="0" step="1" placeholder="45000">
+            <span class="unit">円</span>
+          </span>
+        </label>
+        <div class="grid-2">
+          <label class="field">
+            <span class="field-label">丸めの単位</span>
+            <select id="unitSelect">
+              <option value="10">10円</option>
+              <option value="100" selected>100円</option>
+              <option value="500">500円</option>
+              <option value="1000">1,000円</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">丸め方</span>
+            <select id="methodSelect">
+              <option value="ceil" selected>切り上げ</option>
+              <option value="floor">切り下げ</option>
+              <option value="round">四捨五入</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">
+          <span class="field-label">幹事の名前（任意）</span>
+          <input type="text" id="organizerInput" maxlength="20" placeholder="例：ケン">
+        </label>
+      </section>
+
+      <section class="block" aria-labelledby="h-members">
+        <h2 class="block-title" id="h-members">参加者と負担のしかた</h2>
+        <p class="note">「比率」は残りの金額を重みで分けます（1.5なら一般の1.5倍）。「定額」は1人あたりの金額を固定します（0円でおごり）。</p>
+        <div class="members" id="membersList"></div>
+        <p class="headcount">合計 <strong id="headcount">0</strong> 人</p>
+      </section>
+
+      <div class="calc-bar">
+        <button type="button" class="btn btn-primary btn-wide" id="calcBtn">計算する</button>
+      </div>
+      <p class="form-msg" id="calcMsg" role="alert"></p>
+
+      <!-- 結果：伝票 -->
+      <section class="receipt" id="resultBlock" hidden aria-labelledby="h-result">
+        <h2 class="receipt-title" id="h-result">お会計伝票</h2>
+        <dl class="receipt-sum">
+          <div><dt>総額</dt><dd id="rTotal"></dd></div>
+          <div><dt>定額の合計</dt><dd id="rFixed"></dd></div>
+          <div><dt>比率で分けた額</dt><dd id="rRemain"></dd></div>
+        </dl>
+        <table class="receipt-table">
+          <thead>
+            <tr><th scope="col">区分</th><th scope="col">人数</th><th scope="col">1人あたり</th><th scope="col">小計</th></tr>
+          </thead>
+          <tbody id="rRows"></tbody>
+        </table>
+        <dl class="receipt-sum receipt-foot">
+          <div><dt>集まる金額</dt><dd id="rCollected"></dd></div>
+          <div class="diff-line"><dt>端数</dt><dd id="rDiff"></dd></div>
+        </dl>
+        <p class="diff-explain" id="rDiffExplain"></p>
+        <button type="button" class="btn btn-ghost" id="aiResultBtn">AIにひと言もらう</button>
+      </section>
+
+      <!-- ルーレット -->
+      <section class="roulette" id="rouletteBlock" hidden aria-labelledby="h-roulette">
+        <h2 class="block-title" id="h-roulette">端数ルーレット</h2>
+        <p class="roulette-lead" id="rouletteLead"></p>
+        <label class="check">
+          <input type="checkbox" id="includeFixed">
+          <span>定額の人（主賓・招待客など）も対象にする</span>
+        </label>
+        <div class="wheel-stage">
+          <div class="wheel-pointer" aria-hidden="true"></div>
+          <canvas id="wheel" width="600" height="600" role="img" aria-label="参加者ルーレット"></canvas>
+        </div>
+        <button type="button" class="btn btn-spin" id="spinBtn">ルーレットを回す</button>
+        <div class="winner" id="winnerBox" hidden aria-live="polite">
+          <p class="winner-name" id="winnerName"></p>
+          <p class="winner-pay" id="winnerPay"></p>
+        </div>
+      </section>
+
+    </section>
+  </main>
+
+  <!-- 強制パスワード変更モーダル -->
+  <div class="modal" id="pwModal" hidden role="dialog" aria-modal="true" aria-labelledby="pwModalTitle">
+    <div class="modal-card">
+      <h2 id="pwModalTitle" class="modal-title">パスワードを変更してください</h2>
+      <p class="note">仮パスワードのままでは利用できません。英字と数字を含む8文字以上で設定してください。</p>
+      <form id="pwForm" novalidate>
+        <label class="field">
+          <span class="field-label">いまのパスワード（仮パスワード）</span>
+          <span class="pw-field"><input type="password" name="currentPassword" autocomplete="current-password" required></span>
+        </label>
+        <label class="field">
+          <span class="field-label">新しいパスワード</span>
+          <span class="pw-field"><input type="password" name="newPassword" autocomplete="new-password" required></span>
+        </label>
+        <label class="field">
+          <span class="field-label">新しいパスワード（確認）</span>
+          <span class="pw-field"><input type="password" name="confirmPassword" autocomplete="new-password" required></span>
+        </label>
+        <p class="form-msg" id="pwMsg" role="alert"></p>
+        <button type="submit" class="btn btn-primary btn-wide">パスワードを変更する</button>
+        <button type="button" class="link-btn modal-logout" id="pwLogoutBtn">ログアウトする</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- AIコメントモーダル -->
+  <div class="modal" id="aiModal" hidden role="dialog" aria-modal="true" aria-labelledby="aiModalTitle">
+    <div class="modal-card ai-card">
+      <h2 id="aiModalTitle" class="modal-title">AI司会のひと言</h2>
+      <p class="ai-text" id="aiText"></p>
+      <button type="button" class="btn btn-primary btn-wide" id="aiCloseBtn">閉じる</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="confetti" id="confetti" aria-hidden="true"></div>
+
+  <script src="config.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
